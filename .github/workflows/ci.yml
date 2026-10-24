@@ -21,8 +21,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: |
-          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component clippy
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component clippy,rustfmt
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Formatting
+        run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Unit tests
@@ -32,6 +34,45 @@ jobs:
           mkdir -p /run/sshd
           cargo build
           tests/e2e-loopback.sh target/debug/ble-term-loopback
+
+  # Licences, sources, duplicate crates and RustSec advisories (deny.toml);
+  # the fuzz crate has its own lock file.
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: cargo deny check
+      - name: Advisories of the fuzz crate
+        run: cargo deny --manifest-path tests/fuzz/Cargo.toml check advisories
+
+  # 30 s per fuzz target from the seeds: catches regressions early; long
+  # runs are made on request (docs/testing.md).
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly
+        run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz each target for 30 s
+        run: |
+          for t in $(cargo +nightly fuzz list --fuzz-dir tests/fuzz); do
+            mkdir -p "tests/fuzz/corpus/$t"
+            seeds=
+            [ -d "tests/fuzz/seeds/$t" ] && seeds="tests/fuzz/seeds/$t"
+            cargo +nightly fuzz run --fuzz-dir tests/fuzz "$t" "tests/fuzz/corpus/$t" $seeds -- -max_total_time=30
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: tests/fuzz/artifacts
 
   deb:
     runs-on: ubuntu-latest
@@ -135,7 +176,7 @@ jobs:
   # the commit subjects since the previous tag.
   release:
     if: github.ref_type == 'tag'
-    needs: [test, deb, deb-armhf]
+    needs: [test, deps, fuzz-smoke, deb, deb-armhf]
     runs-on: ubuntu-latest
     permissions:
       contents: write

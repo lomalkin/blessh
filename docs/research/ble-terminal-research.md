@@ -10,7 +10,7 @@ Working notes with full quotations, commit SHAs and line numbers are moved to th
 | [research/terminal-engines.md](terminal-engines.md) | Terminal engines and mobile terminal/SSH clients |
 | [research/linux-server.md](linux-server.md) | BlueZ D-Bus, L2CAP CoC, libraries, PTY/login/PAM, privileges, packaging |
 | [research/mobile-os-ble-apis.md](mobile-os-ble-apis.md) | CoreBluetooth and Android BLE limitations at the system API level |
-| [research/security.md](security.md) | Pairing/bonding on a headless device, threat model, SSH/Noise over BLE |
+| [research/security-notes.md](security-notes.md) | Pairing/bonding on a headless device, threat model, SSH/Noise over BLE |
 
 Notation: **[V]** — verified against source code or primary documentation (link given); **[S]** — secondary source (vendor blog, forum, third-party measurements); **[H]** — hypothesis/estimate, requires an experiment.
 

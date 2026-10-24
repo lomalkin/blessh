@@ -1,22 +1,49 @@
-# Testing ble-term on real hardware
+# Testing ble-term
 
-This is the procedure for checking a server device (and a client) for
-[hardware.md](hardware.md). Run the cases that apply, then add a row there
-with the result of each case: `pass`, `fail` (with a link to the issue or a
-note), or `—` (not run).
+Checks come in three tiers by cost. The hardware procedure (tier 3 and the
+bench part of tier 2) records its results in [hardware.md](hardware.md):
+`pass`, `fail` (with a link to the issue or a note), or `—` (not run) per
+case.
 
-## Checks that need no hardware
+## Tier 1: CI on every push
 
-Run on every change (CI does the same):
+Cheap and short; GitHub runners, `.github/workflows/ci.yml`. A push is not
+done until these pass.
 
 | Check | How |
 |---|---|
+| Formatting, lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` |
 | Protocol state machine (Rust) | `cargo test` |
-| Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
 | OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `ble-term-session` | `tests/e2e-loopback.sh` |
-| ARMv6 build: unit tests on an emulated ARM1176 | CI job `deb-armhf` |
-| Real BlueZ GATT path with two virtual controllers (needs root and the `hci_vhci` module) | `tests/e2e-vhci.sh` |
-| The same with the daemon under the D-Bus policy | `DAEMON_USER=nobody tests/e2e-vhci.sh` (see the script) |
+| Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
+| Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
+| Packages for arm64, amd64, armhf; ARMv6 unit tests on an emulated ARM1176 | jobs `deb`, `deb-armhf` |
+| Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
+
+## Tier 2: long checks and bench tests, on request
+
+Run on request, after substantial changes to the protocol, the daemon or
+the packaging, and always before a release. They take tens of minutes to
+hours and need root, a lot of memory or the bench, so they are not in CI.
+
+| Check | How |
+|---|---|
+| Real BlueZ GATT path with two virtual controllers (root, `hci_vhci`) | `tests/e2e-vhci.sh`; again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
+| Undefined behaviour | `cargo +nightly miri test --lib --no-default-features` (about 40 min) |
+| Model checking | `cargo kani --no-default-features --lib` (`link::proofs`; several GB of memory) |
+| AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
+| Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
+| Bench: install and upgrade, client and server over the radio (`ble-term-connect` on one bench node, server on another) | the cases below that need no phone |
+
+Bench nodes are shared: before a run, say which nodes it uses and for how
+long, and nobody else touches them until the run is reported finished.
+Host names and addresses of the bench stay out of the repository (see
+[AGENTS.md](AGENTS.md)).
+
+## Tier 3: phone, before a release
+
+The cases below that need a phone (S2–S9 at least), run by a person on
+each bench server, from the installation of the release candidate.
 
 ## Setup
 
