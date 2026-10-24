@@ -26,6 +26,12 @@ AllowTcpForwarding no
 PermitTunnel no
 AcceptEnv LANG LC_* COLORTERM
 
+# sntrup761 is excluded: OpenSSH 9.x (Bookworm) offers it as its only
+# post-quantum key exchange, ConnectBot picks it, and its Java
+# implementation takes ~20 s on a phone. OpenSSH 10+ still negotiates
+# mlkem768x25519 (post-quantum); 9.x falls back to curve25519.
+KexAlgorithms -sntrup761x25519-sha512*
+
 ClientAliveInterval 0
 SyslogFacility AUTH
 LogLevel INFO
