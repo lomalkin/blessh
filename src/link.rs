@@ -75,6 +75,8 @@ pub struct Link {
     closing: bool,
     bytes_sent: u64,
     bytes_received: u64,
+    /// Frames that arrived ahead of their turn.
+    reordered: u64,
 }
 
 impl Link {
@@ -93,6 +95,7 @@ impl Link {
             tx_seq: 0,
             rx_seq: 0,
             reorder: BTreeMap::new(),
+            reordered: 0,
             peer_open: false,
             send_credit: 0,
             recv_allowance: recv_window as u64,
@@ -156,6 +159,12 @@ impl Link {
     /// Stream bytes (queued for sending, received) so far.
     pub fn stats(&self) -> (u64, u64) {
         (self.bytes_sent, self.bytes_received)
+    }
+
+    /// Number of frames that arrived out of order so far. v1 assumes one ATT
+    /// bearer, which keeps frames in order; reordering means several (EATT).
+    pub fn reordered(&self) -> u64 {
+        self.reordered
     }
 
     /// Queues stream data for sending.
@@ -231,6 +240,7 @@ impl Link {
                 });
             }
             self.reorder.insert(seq, pkt.to_vec());
+            self.reordered += 1;
             return Ok(events);
         }
         self.rx_seq = self.rx_seq.wrapping_add(1);
@@ -356,6 +366,7 @@ mod tests {
             }
         }
         assert_eq!(out, (0..=255u8).cycle().take(200).collect::<Vec<_>>());
+        assert_eq!(b.reordered(), 4);
     }
 
     #[test]

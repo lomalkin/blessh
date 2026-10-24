@@ -39,4 +39,4 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 | [TESTING.md](TESTING.md) | How to test on real hardware |
 | [HARDWARE.md](HARDWARE.md) | Hardware and OS versions verified so far; add a row after each hardware test |
 | [backlog.md](backlog.md) | Ideas that are agreed to be useful but not scheduled |
-| [research/](research/) | Original architecture research: [ble-terminal-research.md](research/ble-terminal-research.md) and working notes A–E (historical; not updated); F: client platforms (web, macOS, Windows, iOS) |
+| [research/](research/) | Original architecture research: [ble-terminal-research.md](research/ble-terminal-research.md) and working notes A–E (historical; not updated); F: client platforms (web, macOS, Windows, iOS), summarised for implementers in [client-other-platforms.md](research/client-other-platforms.md) |

@@ -14,7 +14,9 @@ description is [PROTOCOL.md](PROTOCOL.md).
   encryption.
 * **Frames:** header (type u8, sequence u16 LE), the four types HELLO,
   DATA, CREDIT, CLOSE and their payloads, sequence numbering of every frame,
-  reorder window of 64, frame size min(ATT_MTU − 3, 500). The test vectors
+  reorder window of 64 (a tolerance; v1 assumes a single ATT bearer), frame
+  size min(ATT_MTU − 3, 500), one frame per ATT PDU with either write type
+  on RX. The test vectors
   in PROTOCOL.md stay valid and are checked by both the Rust tests and
   `BleStreamLinkTest` in the client.
 * **Handshake:** HELLO with magic `BLTM` and version 1. Either side may send

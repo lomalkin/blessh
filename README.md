@@ -119,6 +119,9 @@ ble-term-connect --scan                       # list servers
 ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' -o HostKeyAlias=my-pi user@my-pi
 ```
 
+The client machine needs EATT off as well (`Channels = 1`, see above; the
+default since BlueZ 5.67); `ble-term-connect` warns if it is on.
+
 ## Development
 
 ```

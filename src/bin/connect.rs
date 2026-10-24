@@ -197,7 +197,49 @@ async fn characteristics(dev: &Device) -> bluer::Result<Option<Chars>> {
     Ok(None)
 }
 
+/// `Channels` from the `[GATT]` section of BlueZ's main.conf, if set.
+fn eatt_channels(conf: &str) -> Option<u8> {
+    let mut section = "";
+    let mut channels = None;
+    for line in conf.lines().map(str::trim) {
+        if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = s;
+        } else if let Some((k, v)) = line.split_once('=') {
+            if section == "GATT" && k.trim() == "Channels" {
+                channels = v.trim().parse().ok();
+            }
+        }
+    }
+    channels
+}
+
+/// Why this machine's BlueZ may open several ATT bearers (EATT), which
+/// BleStream v1 does not support. BlueZ before 5.67 does so by default.
+fn eatt_hint() -> Option<String> {
+    let conf = std::fs::read_to_string("/etc/bluetooth/main.conf").unwrap_or_default();
+    match eatt_channels(&conf) {
+        Some(n) if n > 1 => return Some(format!("Channels = {n} in /etc/bluetooth/main.conf")),
+        Some(_) => return None,
+        None => {}
+    }
+    let out = std::process::Command::new("bluetoothctl")
+        .arg("--version")
+        .output()
+        .ok()?;
+    let version = String::from_utf8_lossy(&out.stdout);
+    let version = version.trim().rsplit(' ').next()?.to_owned();
+    let (major, minor) = version.split_once('.')?;
+    let old = (major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?) < (5, 67);
+    old.then(|| format!("BlueZ {version} enables EATT by default"))
+}
+
 async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
+    if let Some(why) = eatt_hint() {
+        warn!(
+            "{why}; BleStream needs a single ATT bearer: set Channels = 1 in the [GATT] section \
+             of /etc/bluetooth/main.conf and restart bluetooth"
+        );
+    }
     let keep_link = args.keep_link;
     let session = bluer::Session::new().await?;
     let adapter = match &args.adapter {
@@ -307,4 +349,21 @@ async fn relay<T: PacketTx>(
         }
     };
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eatt_channels;
+
+    #[test]
+    fn reads_gatt_channels() {
+        assert_eq!(eatt_channels(""), None);
+        assert_eq!(eatt_channels("[GATT]\n#Channels = 3\n"), None);
+        assert_eq!(eatt_channels("[GATT]\nChannels = 1\n"), Some(1));
+        assert_eq!(
+            eatt_channels("[General]\nChannels=2\n[GATT]\nCache = always\n"),
+            None
+        );
+        assert_eq!(eatt_channels("[GATT]\nChannels=3\n[LE]\n"), Some(3));
+    }
 }

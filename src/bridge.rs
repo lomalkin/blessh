@@ -36,6 +36,10 @@ impl PacketTx for std::sync::Arc<bluer::gatt::CharacteristicWriter> {
     }
 }
 
+const REORDER_WARNING: &str = "frames arrive out of order: the link uses several ATT \
+    bearers (EATT), which BleStream v1 does not support and which can break the session; \
+    set Channels = 1 in the [GATT] section of /etc/bluetooth/main.conf on both sides";
+
 /// Upper bound of stream data read ahead of the peer's credit.
 const READ_AHEAD: usize = 8192;
 
@@ -144,6 +148,7 @@ where
 
     let mut pending = initial;
     let mut stream_done = false;
+    let mut warned_reorder = false;
     loop {
         for ev in pending.drain(..) {
             match ev {
@@ -182,6 +187,10 @@ where
                 };
                 log::trace!("rx packet {} bytes", pkt.len());
                 pending = link.on_packet(&pkt)?;
+                if !warned_reorder && link.reordered() > 0 {
+                    warned_reorder = true;
+                    log::warn!("{REORDER_WARNING}");
+                }
             }
             // A single write keeps this branch cancel safe; a flush in the same
             // future could be dropped after the write was accepted.

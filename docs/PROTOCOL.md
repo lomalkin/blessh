@@ -28,6 +28,19 @@ A frame never exceeds min(ATT_MTU − 3, 500) bytes. The 500 byte cap leaves
 room below the 512 byte attribute limit: BlueZ acting as GATT client was seen
 to drop larger writes without response when EATT is enabled.
 
+The client writes RX with write without response or with write request
+(write with response); the server treats both alike. Either way a frame
+fits in one ATT PDU: long writes (Prepare/Execute Write), which split a
+value across PDUs, are not allowed.
+
+BleStream relies on the link layer for reliable, ordered delivery and
+assumes a single ATT bearer: the connection's unenhanced ATT bearer. With
+several bearers (EATT), frames can overtake each other by any number of
+positions, so v1 does not support EATT; both sides should have it off
+(BlueZ: `Channels = 1` in the `[GATT]` section of `main.conf`, the default
+since 5.67; phones open EATT only on encrypted links, and ble-term links
+are not encrypted).
+
 ## Frames
 
 ```
@@ -38,9 +51,10 @@ offset 3   ...     payload
 
 Each direction numbers its frames 0, 1, 2, … (wrapping at 65536); every frame
 type consumes a number. The receiver processes frames strictly in sequence
-order. A frame that arrives early (up to 64 ahead, e.g. because GATT used
-several EATT bearers) is held until the gap is filled; anything else is a
-protocol error.
+order. As a tolerance, not a guarantee, a frame that arrives early (up to 64
+ahead) is held until the gap is filled; anything else is a protocol error.
+Implementations log a warning on the first early frame, since on a single
+bearer it does not happen.
 
 | Type | Name | Payload |
 |---|---|---|
@@ -96,8 +110,14 @@ already reliable, so no retransmission is needed.
 
 * Use write without response for RX and keep only the OS-permitted number of
   writes outstanding (Android: wait for `onCharacteristicWrite`; iOS: wait for
-  `canSendWriteWithoutResponse`).
-* Frame size = min(negotiated ATT MTU − 3, 500) (Android: request MTU 517 first).
+  `canSendWriteWithoutResponse`). Where writes without response can be lost
+  silently (a lost frame ends the session), use write with response, one
+  write at a time; uplink throughput is lower.
+* Frame size = min(negotiated ATT MTU − 3, 500) (Android: request MTU 517
+  first). A client that cannot query the MTU (Web Bluetooth) uses the `mtu`
+  key of INFO, read after the MTU exchange. Without it, it starts at 20 and
+  may raise the size to the longest TX notification received: one bearer
+  has one MTU for both directions.
 * Pass DATA bytes to the SSH layer unchanged; never decode text per packet.
 
 ## Test vectors

@@ -18,3 +18,15 @@ Ideas worth doing, not scheduled yet.
   authentication). Options: several sessions at once (needs BlueZ ≥ 5.69,
   which keeps a socket per device), letting a new client pre-empt one that
   has not authenticated, logging repeated attempts.
+
+## Clients
+
+Options for clients beyond Android and Linux, cheapest first (details:
+[research/client-other-platforms.md](research/client-other-platforms.md)):
+
+* `ProxyCommand` helpers for macOS and Windows, ideally one crate with
+  `ble-term-connect`.
+* Android bridge app (BLE to localhost) for any Android SSH client.
+* Web client (Web Bluetooth + WASM SSH): decided against for now (origin
+  trust, supply chain, unverified browser write behaviour).
+* iOS app.
