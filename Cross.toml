@@ -1,3 +1,8 @@
 # Lets QEMU_CPU pick the emulated CPU for `cross test` (see ci.yml).
 [build.env]
 passthrough = ["QEMU_CPU"]
+
+# The 0.2.5 image's glibc predates getrandom(), which current Rust std
+# links against.
+[target.arm-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/arm-unknown-linux-gnueabihf:main"
