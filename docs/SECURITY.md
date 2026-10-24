@@ -175,7 +175,7 @@ from the radio). Fixed with saturating arithmetic.
 | AddressSanitizer, LeakSanitizer | unit tests; loopback end-to-end test (300 KB each way, reordering, session socket) | clean |
 | Miri | library unit tests without BlueZ (`cargo miri test --lib --no-default-features`) | 12 of 13 tests clean; `sequence_wraps` (70 000 frames) takes hours under Miri and runs separately |
 | Kani | `link::proofs`: frame decoding, link invariants over packet sequences, credit and frame size limits | pending |
-| D-Bus policy | `tests/e2e-vhci.sh` with the daemon as a separate user under the policy; calls outside the list (`StartDiscovery`, setting `Pairable`, `RemoveDevice`) | passes; other calls denied, allowed without the policy |
+| D-Bus policy | `tests/e2e-vhci.sh` with the daemon as a separate user under the policy; calls outside the list (`StartDiscovery`, setting `Pairable`, `RemoveDevice`) | passes; other calls denied, allowed without the policy. On the Trixie and Bookworm benches with a phone: sessions, reconnects and idle-link disconnects work, and the bus logged no rejected call from the daemon |
 | `cargo audit` | main crate and fuzz crate lock files | no advisories |
 | `cargo deny` | licences, advisories, sources, yanked crates (`deny.toml`) | ok; one duplicate crate version warning |
 | Sandbox of the running daemon | target bench (Trixie) | as in the table above |
