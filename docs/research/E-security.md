@@ -1,4 +1,4 @@
-> Рабочие заметки исследования (2026-10-24), приложение к `../ble-terminal-research.md`. Пути вида `scratchpad/repos/...` относятся к временным клонам; номера строк соответствуют указанным SHA.
+> Research working notes (2026-10-24), appendix to `../ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
 # E. Security: BLE terminal (headless BlueZ peripheral, Android/iOS clients, agetty/login/PAM)
 

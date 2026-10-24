@@ -1,4 +1,4 @@
-> Рабочие заметки исследования (2026-10-24), приложение к `../ble-terminal-research.md`. Пути вида `scratchpad/repos/...` относятся к временным клонам; номера строк соответствуют указанным SHA.
+> Research working notes (2026-10-24), appendix to `../ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
 # C. Linux server side: BLE terminal on BlueZ (research notes)
 
@@ -206,7 +206,7 @@ From `bluez/src/main.conf` (5.82/upstream) and 5.66 copy: **[V defaults]**
 | `[General] Experimental` / `-E` | false | **not needed** for GATT server, Acquire*, advertising, L2CAP |
 | `[LE] Min/MaxConnectionInterval` | unset | only for central-initiated; peripheral can request via L2CAP conn param update — not exposed in D-Bus **[H]** |
 Nothing requires `--compat` or `--experimental`. Prior art that edits bluetoothd flags
-(`VishovVladimir_ble_tty` README: "настраивает `bluetoothd --experimental`") is unnecessary.
+(`VishovVladimir_ble_tty` README: "configures `bluetoothd --experimental`") is unnecessary.
 
 ---------------------------------------------------------------------------------------------------
 

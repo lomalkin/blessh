@@ -1,384 +1,384 @@
-# Исследование архитектуры BLE-терминала для Linux
+# BLE Terminal Architecture Research for Linux
 
-Дата: 2026-10-24. Статус: этап 1 (исследование) завершён; ожидаются решения оператора (раздел 10).
+Date: 2026-10-24. Status: stage 1 (research) complete; operator decisions pending (section 10).
 
-Рабочие заметки с полными цитатами, SHA коммитов и номерами строк вынесены в приложения:
+Working notes with full quotations, commit SHAs and line numbers are moved to the appendices:
 
-| Приложение | Тема |
+| Appendix | Topic |
 |---|---|
-| [research/A-mobile-ble-uart-apps.md](research/A-mobile-ble-uart-apps.md) | Мобильные BLE UART/terminal-приложения, «shell over BLE»-проекты |
-| [research/B-terminal-engines.md](research/B-terminal-engines.md) | Терминальные движки и мобильные терминальные/SSH-клиенты |
-| [research/C-linux-server.md](research/C-linux-server.md) | BlueZ D-Bus, L2CAP CoC, библиотеки, PTY/login/PAM, привилегии, пакетирование |
-| [research/D-mobile-os-ble-apis.md](research/D-mobile-os-ble-apis.md) | Ограничения CoreBluetooth и Android BLE на уровне системных API |
-| [research/E-security.md](research/E-security.md) | Pairing/bonding на headless-устройстве, модель угроз, SSH/Noise поверх BLE |
+| [research/A-mobile-ble-uart-apps.md](research/A-mobile-ble-uart-apps.md) | Mobile BLE UART/terminal apps, "shell over BLE" projects |
+| [research/B-terminal-engines.md](research/B-terminal-engines.md) | Terminal engines and mobile terminal/SSH clients |
+| [research/C-linux-server.md](research/C-linux-server.md) | BlueZ D-Bus, L2CAP CoC, libraries, PTY/login/PAM, privileges, packaging |
+| [research/D-mobile-os-ble-apis.md](research/D-mobile-os-ble-apis.md) | CoreBluetooth and Android BLE limitations at the system API level |
+| [research/E-security.md](research/E-security.md) | Pairing/bonding on a headless device, threat model, SSH/Noise over BLE |
 
-Обозначения: **[V]** — проверено по исходному коду или первичной документации (ссылка дана); **[S]** — вторичный источник (блог вендора, форум, измерения третьих лиц); **[H]** — гипотеза/оценка, требует эксперимента.
+Notation: **[V]** — verified against source code or primary documentation (link given); **[S]** — secondary source (vendor blog, forum, third-party measurements); **[H]** — hypothesis/estimate, requires an experiment.
 
-Исследованные ревизии (shallow clone): BlueZ `a0580dad` (5.87-dev), теги BlueZ 5.55/5.66–5.69/5.82; Linux `17bb0e2f`; bluer `57ec7045`; termux-app `8629e632`; connectbot `0bea3773`; connectbot/termlib `56934dd1`; connectbot/sshlib `9b80e3da`; SwiftTerm `c3436be3`; swift-nio-ssh `149f32ff`; xterm.dart `d35ba2cc`; blink `a90b4423`; libvterm `934bc2fb`; OpenSSH `26b1363c`; kable `ad88767b`; SimpleBluetoothLeTerminal `f322c06c`; nRF Toolbox (Android `c7f8e443`, iOS `d419fb24`); Bluefruit LE Connect; asteroid-ble-shell `36d19c6a`; linkr-bee `8ea74735`; sorah/bluetooth-getty `c98973e9` и др. (полный список — в приложениях).
-
----
-
-## 1. Краткое резюме
-
-1. **Готового решения нет.** Ни одно найденное open-source мобильное приложение не делает полноценную VT/xterm-эмуляцию поверх BLE: все BLE UART-клиенты (nRF Toolbox, Bluefruit, SimpleBluetoothLeTerminal и др.) — это лог строк с полем ввода [V, прил. A §1]. Серверные «shell over NUS» для Linux существуют (pi-loop, ble_tty, asteroid-ble-shell, coBlue), но ни у одного нет канала изменения размера терминала, управления потоком и мобильного клиента; два из них раздают root-shell без аутентификации [V, прил. C §4].
-2. **Зрелые компоненты для сборки есть, и они удачно стыкуются.** Терминальные движки с транспорт-независимым API: **SwiftTerm** (iOS, MIT) и **ConnectBot termlib** / Termux terminal-emulator (Android, Apache-2.0) [V, прил. B]. SSH-библиотеки с подключаемым байтовым транспортом: **ConnectBot sshlib** (`Transport`/`TransportFactory`) и **SwiftNIO SSH** (работает поверх любого NIO Channel) [V, прил. E §4.2]. На сервере: `sshd -i` работает поверх произвольного потока stdin/stdout, это штатно тестируется в регрессии OpenSSH [V].
-3. **Ключевой вывод исследования:** оптимальная архитектура — **BLE как «надёжная труба байтов» + SSH-протокол поверх неё**: на сервере per-connection `sshd -i` (PAM, PTY, controlling TTY, window-change, учёт сессий, host-ключи — всё из коробки), на клиентах — существующие пары «терминальный движок + SSH-библиотека», которые уже интегрированы друг с другом в ConnectBot (Android) и в демо-приложении SwiftTerm (iOS). Собственный код сводится к: (а) BLE-демону на Linux с GATT-сервисом и кредитным управлением потоком, (б) BLE-транспорту для sshlib/SwiftNIO SSH на клиентах. Это максимизирует повторное использование и одновременно решает главную проблему безопасности headless-устройства (BLE-pairing без дисплея не защищает от MITM; SSH host key pinning — защищает).
-4. **Транспорт:** базовый — **собственный GATT-сервис** (write-without-response вход, notify выход, in-band кадрирование с кредитами). Сырой NUS непригоден как основной протокол (нет resize, нет backpressure, нет служебного канала). **L2CAP CoC** технически лучше на Linux (реальный credit-based backpressure, per-client сокеты, без привилегий), но совместимость iOS/Android ↔ BlueZ CoC публично не подтверждена, а поведение CoC в фоне на iOS не документировано — поэтому CoC планируется как опциональное ускорение после эксперимента, с откатом на GATT.
-5. **Главные технические ограничения:** (а) в BlueZ нет backpressure для уведомлений (неограниченная очередь `att->write_queue`), а через AcquireWrite write-without-response молча теряются при EAGAIN — нужен свой кредитный протокол [V]; (б) BlueZ 5.66 (Debian/RPi OS Bookworm) не умеет per-device fd для AcquireNotify/AcquireWrite — на нём только один клиент на характеристику; с 5.69 (Trixie: 5.82) — per-device [V]; (в) на iOS нельзя задать MTU, интервал соединения ≥ 15 мс, нельзя программно инициировать pairing [V]; (г) на Android — одна GATT-операция в полёте [V].
-6. **Сервер не требует** изменений `main.conf`, `--experimental`, root для BLE-части и не монополизирует адаптер: регистрация GATT/рекламы через D-Bus BlueZ доступна непривилегированному пользователю и исчезает при остановке процесса [V].
-7. **Рекомендуемый MVP** проверяется без мобильных приложений: BLE-демон на Pi + десктопный клиент-«ProxyCommand» → обычный `ssh -o ProxyCommand=...` даёт полноценный терминал (vim/htop/tmux) через BLE уже на первом этапе. Затем — форк ConnectBot (Android) и приложение на SwiftTerm + SwiftNIO SSH (iOS).
-8. Это расходится с буквой ТЗ в одном пункте: вместо `agetty`/`login` сессию поднимает `sshd` (который сам использует PAM и стандартный PTY). Альтернатива с `login`/PAM и собственным протоколом проработана (раздел 7.1) и остаётся реализуемой; выбор вынесен оператору (вопрос 1).
+Revisions examined (shallow clone): BlueZ `a0580dad` (5.87-dev), BlueZ tags 5.55/5.66–5.69/5.82; Linux `17bb0e2f`; bluer `57ec7045`; termux-app `8629e632`; connectbot `0bea3773`; connectbot/termlib `56934dd1`; connectbot/sshlib `9b80e3da`; SwiftTerm `c3436be3`; swift-nio-ssh `149f32ff`; xterm.dart `d35ba2cc`; blink `a90b4423`; libvterm `934bc2fb`; OpenSSH `26b1363c`; kable `ad88767b`; SimpleBluetoothLeTerminal `f322c06c`; nRF Toolbox (Android `c7f8e443`, iOS `d419fb24`); Bluefruit LE Connect; asteroid-ble-shell `36d19c6a`; linkr-bee `8ea74735`; sorah/bluetooth-getty `c98973e9` and others (full list in the appendices).
 
 ---
 
-## 2. Найденные проекты
+## 1. Executive summary
 
-Активность — по `gh api` на 2026-10-24. «Пригодность»: ★★★ — брать как основу, ★★ — использовать частично/как библиотеку, ★ — только как справка, ✗ — не использовать.
+1. **There is no ready-made solution.** None of the open-source mobile apps found does full VT/xterm emulation over BLE: all BLE UART clients (nRF Toolbox, Bluefruit, SimpleBluetoothLeTerminal, etc.) are a log of lines with an input field [V, app. A §1]. Server-side "shell over NUS" for Linux exists (pi-loop, ble_tty, asteroid-ble-shell, coBlue), but none of them has a terminal resize channel, flow control, or a mobile client; two of them hand out a root shell without authentication [V, app. C §4].
+2. **Mature building blocks exist, and they fit together well.** Terminal engines with a transport-independent API: **SwiftTerm** (iOS, MIT) and **ConnectBot termlib** / Termux terminal-emulator (Android, Apache-2.0) [V, app. B]. SSH libraries with a pluggable byte transport: **ConnectBot sshlib** (`Transport`/`TransportFactory`) and **SwiftNIO SSH** (works over any NIO Channel) [V, app. E §4.2]. On the server: `sshd -i` works over an arbitrary stdin/stdout stream, and this is routinely tested in the OpenSSH regression suite [V].
+3. **Key finding of the research:** the optimal architecture is **BLE as a "reliable byte pipe" + the SSH protocol on top of it**: on the server, a per-connection `sshd -i` (PAM, PTY, controlling TTY, window-change, session accounting, host keys — all out of the box); on the clients, existing "terminal engine + SSH library" pairs that are already integrated with each other in ConnectBot (Android) and in the SwiftTerm demo app (iOS). Our own code comes down to: (a) a BLE daemon on Linux with a GATT service and credit-based flow control, (b) a BLE transport for sshlib/SwiftNIO SSH on the clients. This maximizes reuse and at the same time solves the main security problem of a headless device (BLE pairing without a display does not protect against MITM; SSH host key pinning does).
+4. **Transport:** the baseline is a **custom GATT service** (write-without-response input, notify output, in-band framing with credits). Raw NUS is unsuitable as the main protocol (no resize, no backpressure, no control channel). **L2CAP CoC** is technically better on Linux (real credit-based backpressure, per-client sockets, no privileges), but iOS/Android ↔ BlueZ CoC compatibility is not publicly confirmed, and CoC behavior in the background on iOS is undocumented — so CoC is planned as an optional speed-up after an experiment, with fallback to GATT.
+5. **Main technical constraints:** (a) BlueZ has no backpressure for notifications (unbounded `att->write_queue`), and through AcquireWrite, write-without-response packets are silently dropped on EAGAIN — our own credit protocol is needed [V]; (b) BlueZ 5.66 (Debian/RPi OS Bookworm) cannot do per-device fds for AcquireNotify/AcquireWrite — it supports only one client per characteristic; from 5.69 on (Trixie: 5.82) — per-device [V]; (c) on iOS, the MTU cannot be set, the connection interval is ≥ 15 ms, and pairing cannot be initiated programmatically [V]; (d) on Android — one GATT operation in flight [V].
+6. **The server does not require** changes to `main.conf`, `--experimental`, or root for the BLE part, and does not monopolize the adapter: GATT/advertising registration via BlueZ D-Bus is available to an unprivileged user and disappears when the process stops [V].
+7. **The recommended MVP** can be verified without mobile apps: BLE daemon on the Pi + a desktop "ProxyCommand" client → plain `ssh -o ProxyCommand=...` gives a full terminal (vim/htop/tmux) over BLE already at the first stage. Then — a ConnectBot fork (Android) and an app on SwiftTerm + SwiftNIO SSH (iOS).
+8. This deviates from the letter of the brief in one point: instead of `agetty`/`login`, the session is started by `sshd` (which itself uses PAM and a standard PTY). The alternative with `login`/PAM and our own protocol has been worked out (section 7.1) and remains feasible; the choice is left to the operator (question 1).
 
-### 2.1 Мобильные клиенты и BLE-библиотеки
+---
 
-| Проект | Платформа | Лицензия [V] | Активность | Что внутри | Пригодность |
+## 2. Projects found
+
+Activity — per `gh api` as of 2026-10-24. "Suitability": ★★★ — take as the base, ★★ — use partially/as a library, ★ — reference only, ✗ — do not use.
+
+### 2.1 Mobile clients and BLE libraries
+
+| Project | Platform | License [V] | Activity | What's inside | Suitability |
 |---|---|---|---|---|---|
-| [connectbot/connectbot](https://github.com/connectbot/connectbot) | Android, Kotlin/Compose | Apache-2.0 | 3.5k★, push 2026-10-23 | Полноценный SSH-клиент: termlib + sshlib, хосты, extra-keys, фоновый сервис; `AbsTransport`; sshlib уже используется с нестандартным `transportFactory` для jump-хостов (`transport/SSH.kt:976-1011`) | ★★★ основа Android-клиента (форк + BLE-транспорт) |
-| [connectbot/termlib](https://github.com/connectbot/termlib) | Android, Compose + libvterm (JNI) | Apache-2.0 + MIT | 28★, 0.3.x, активен | `writeInput` / `onKeyboardInput` / `onResize` — без привязки к транспорту (`TerminalEmulator.kt:82-275`) | ★★★ (через ConnectBot) |
-| [connectbot/sshlib](https://github.com/connectbot/sshlib) | Kotlin/JVM | Apache-2.0 | активен, 0.6.x | `interface Transport` «any byte stream transport» (`transport/Transport.kt:22-63`), `TransportFactory` (`:50-58`) | ★★★ |
-| [termux/termux-app](https://github.com/termux/termux-app) terminal-emulator / terminal-view | Android, Java | Библиотеки Apache-2.0 (по `LICENSE.md`; в подкаталогах нет своих файлов лицензии), остальное GPLv3; `ExtraKeysView` — GPLv3 | 63k★, push 2026-09 | Лучший IME, Unicode 15; `TerminalSession` — `final` и привязан к JNI/PTY (`TerminalSession.java:31,103-131`) | ★★ запасной движок (патч ~150–300 строк) |
-| [migueldeicaza/SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | iOS/macOS, Swift | MIT | 1.7k★, v1.99.1 2026-10-21 | `feed(byteArray:)`, делегат `send(data:)`, `sizeChanged`; панель Esc/Ctrl; Unicode 17; esctest; демо SSH-терминала на swift-nio-ssh (`TerminalApp/iOSTerminal/UIKitSshTerminalView.swift`); на нём построены La Terminal и Secure ShellFish | ★★★ основа iOS-клиента |
-| [apple/swift-nio-ssh](https://github.com/apple/swift-nio-ssh) | Swift | Apache-2.0 | Apple, активен | `NIOSSHHandler` с `ByteBuffer` вход/выход (`NIOSSHHandler.swift:120-124`), тесты на in-memory каналах; curve25519, Ed25519/ECDSA, AES-GCM; pinning через делегат | ★★★ |
-| [JuulLabs/kable](https://github.com/JuulLabs/kable) | Kotlin Multiplatform | Apache-2.0 | 1.2k★, активен | Корректный flow control WNR на обеих ОС (`CBPeripheralCoreBluetoothPeripheral.kt:213-229`, `BluetoothDeviceAndroidPeripheral.kt:195-211`) | ★★ (опция общего BLE-слоя; справочник паттернов) |
-| [nordicsemi/Kotlin-BLE-Library](https://github.com/nordicsemi/Kotlin-BLE-Library), [Android-BLE-Library](https://github.com/nordicsemi/Android-BLE-Library) | Android | BSD-3 | активны | Очереди запросов, MTU, split | ★★ альтернатива BLE-слоя на Android |
-| [nordicsemi/IOS-CoreBluetooth-Mock](https://github.com/nordicsemi/IOS-CoreBluetooth-Mock) | iOS | BSD-3 | активен | Мок CoreBluetooth для тестов/симулятора | ★★ для тестов |
-| [kai-morich/SimpleBluetoothLeTerminal](https://github.com/kai-morich/SimpleBluetoothLeTerminal) | Android | MIT | 345★, 2026-04 | Очередь записи по `onCharacteristicWrite` (`SerialSocket.java:349-421`), кредиты Telit TIO (`:506-645`); UI — лог строк | ★ справка (GATT-машина состояний, кредиты) |
-| [nordicsemi/Android-nRF-Toolbox](https://github.com/nordicsemi/Android-nRF-Toolbox), [IOS-nRF-Toolbox](https://github.com/nordicsemi/IOS-nRF-Toolbox) | Android / iOS | BSD-3 | активны | UART-профиль: чат-лог; iOS отбрасывает не-UTF-8 пакеты и обрезает пробелы (`UARTViewModel.swift:172-175`) | ★ справка; как терминал ✗ |
-| Adafruit Bluefruit LE Connect ([iOS](https://github.com/adafruit/Bluefruit_LE_Connect_v2), [Android](https://github.com/adafruit/Bluefruit_LE_Connect_Android_V2)) | iOS / Android | MIT | iOS — 2024, Android — архив | WNR в цикле без `canSendWriteWithoutResponse` (`BlePeripheral.swift:506-513`) — антипаттерн | ✗ |
-| Serial Bluetooth Terminal (Kai Morich) | Android | проприетарная | Play Store | «line-oriented terminal» | ✗ (закрыт) |
-| [johnhowe/BlueTerm](https://github.com/johnhowe/BlueTerm) | Android | нет LICENSE | 2014 | Единственный найденный мобильный VT100 поверх Bluetooth — но Classic SPP | ✗ (история) |
-| [TerminalStudio/xterm.dart](https://github.com/TerminalStudio/xterm.dart) | Flutter | MIT | последний релиз 2024-02, 109 issues | API на `String`, Unicode 11 | ✗ (замедляется) |
-| flutter_blue_plus | Flutter | **собственная лицензия** (коммерческая для for-profit, телеметрия при сборке) | активен | — | ✗ (лицензия); альтернатива universal_ble (BSD-3) |
-| [blinksh/blink](https://github.com/blinksh/blink) | iOS | GPL-3.0 | 7k★ | hterm в WKWebView, нативный транспорт | ★ справка; форк для App Store — юридический риск |
-| xterm.js (в WebView, не Web Bluetooth) | обе | MIT | 21k★, 6.0 | Лучшая эмуляция; открытые issues по мобильному вводу (#5377, #3600, #3727, #5108) | ★ запасной вариант общего UI |
-| libvterm, alacritty_terminal, termwiz, libghostty-vt | C / Rust / Zig | MIT / Apache-2.0 / MIT | — | Только движки, без рендерера/IME; libghostty-vt без стабильного API | ✗ для этой задачи |
+| [connectbot/connectbot](https://github.com/connectbot/connectbot) | Android, Kotlin/Compose | Apache-2.0 | 3.5k★, push 2026-10-23 | Full SSH client: termlib + sshlib, hosts, extra-keys, background service; `AbsTransport`; sshlib is already used with a non-standard `transportFactory` for jump hosts (`transport/SSH.kt:976-1011`) | ★★★ base of the Android client (fork + BLE transport) |
+| [connectbot/termlib](https://github.com/connectbot/termlib) | Android, Compose + libvterm (JNI) | Apache-2.0 + MIT | 28★, 0.3.x, active | `writeInput` / `onKeyboardInput` / `onResize` — not tied to a transport (`TerminalEmulator.kt:82-275`) | ★★★ (via ConnectBot) |
+| [connectbot/sshlib](https://github.com/connectbot/sshlib) | Kotlin/JVM | Apache-2.0 | active, 0.6.x | `interface Transport` "any byte stream transport" (`transport/Transport.kt:22-63`), `TransportFactory` (`:50-58`) | ★★★ |
+| [termux/termux-app](https://github.com/termux/termux-app) terminal-emulator / terminal-view | Android, Java | Libraries Apache-2.0 (per `LICENSE.md`; subdirectories have no license files of their own), the rest GPLv3; `ExtraKeysView` — GPLv3 | 63k★, push 2026-09 | Best IME, Unicode 15; `TerminalSession` is `final` and tied to JNI/PTY (`TerminalSession.java:31,103-131`) | ★★ fallback engine (patch ~150–300 lines) |
+| [migueldeicaza/SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | iOS/macOS, Swift | MIT | 1.7k★, v1.99.1 2026-10-21 | `feed(byteArray:)`, `send(data:)` delegate, `sizeChanged`; Esc/Ctrl bar; Unicode 17; esctest; SSH terminal demo on swift-nio-ssh (`TerminalApp/iOSTerminal/UIKitSshTerminalView.swift`); La Terminal and Secure ShellFish are built on it | ★★★ base of the iOS client |
+| [apple/swift-nio-ssh](https://github.com/apple/swift-nio-ssh) | Swift | Apache-2.0 | Apple, active | `NIOSSHHandler` with `ByteBuffer` in/out (`NIOSSHHandler.swift:120-124`), tests on in-memory channels; curve25519, Ed25519/ECDSA, AES-GCM; pinning via delegate | ★★★ |
+| [JuulLabs/kable](https://github.com/JuulLabs/kable) | Kotlin Multiplatform | Apache-2.0 | 1.2k★, active | Correct WNR flow control on both OSes (`CBPeripheralCoreBluetoothPeripheral.kt:213-229`, `BluetoothDeviceAndroidPeripheral.kt:195-211`) | ★★ (option for a shared BLE layer; pattern reference) |
+| [nordicsemi/Kotlin-BLE-Library](https://github.com/nordicsemi/Kotlin-BLE-Library), [Android-BLE-Library](https://github.com/nordicsemi/Android-BLE-Library) | Android | BSD-3 | active | Request queues, MTU, split | ★★ alternative BLE layer on Android |
+| [nordicsemi/IOS-CoreBluetooth-Mock](https://github.com/nordicsemi/IOS-CoreBluetooth-Mock) | iOS | BSD-3 | active | CoreBluetooth mock for tests/simulator | ★★ for tests |
+| [kai-morich/SimpleBluetoothLeTerminal](https://github.com/kai-morich/SimpleBluetoothLeTerminal) | Android | MIT | 345★, 2026-04 | Write queue driven by `onCharacteristicWrite` (`SerialSocket.java:349-421`), Telit TIO credits (`:506-645`); UI is a log of lines | ★ reference (GATT state machine, credits) |
+| [nordicsemi/Android-nRF-Toolbox](https://github.com/nordicsemi/Android-nRF-Toolbox), [IOS-nRF-Toolbox](https://github.com/nordicsemi/IOS-nRF-Toolbox) | Android / iOS | BSD-3 | active | UART profile: chat log; iOS drops non-UTF-8 packets and trims whitespace (`UARTViewModel.swift:172-175`) | ★ reference; as a terminal ✗ |
+| Adafruit Bluefruit LE Connect ([iOS](https://github.com/adafruit/Bluefruit_LE_Connect_v2), [Android](https://github.com/adafruit/Bluefruit_LE_Connect_Android_V2)) | iOS / Android | MIT | iOS — 2024, Android — archived | WNR in a loop without `canSendWriteWithoutResponse` (`BlePeripheral.swift:506-513`) — antipattern | ✗ |
+| Serial Bluetooth Terminal (Kai Morich) | Android | proprietary | Play Store | "line-oriented terminal" | ✗ (closed) |
+| [johnhowe/BlueTerm](https://github.com/johnhowe/BlueTerm) | Android | no LICENSE | 2014 | The only mobile VT100 over Bluetooth found — but Classic SPP | ✗ (history) |
+| [TerminalStudio/xterm.dart](https://github.com/TerminalStudio/xterm.dart) | Flutter | MIT | last release 2024-02, 109 issues | `String`-based API, Unicode 11 | ✗ (slowing down) |
+| flutter_blue_plus | Flutter | **custom license** (commercial for for-profit, telemetry at build time) | active | — | ✗ (license); alternative universal_ble (BSD-3) |
+| [blinksh/blink](https://github.com/blinksh/blink) | iOS | GPL-3.0 | 7k★ | hterm in WKWebView, native transport | ★ reference; an App Store fork is a legal risk |
+| xterm.js (in a WebView, not Web Bluetooth) | both | MIT | 21k★, 6.0 | Best emulation; open issues on mobile input (#5377, #3600, #3727, #5108) | ★ fallback option for a shared UI |
+| libvterm, alacritty_terminal, termwiz, libghostty-vt | C / Rust / Zig | MIT / Apache-2.0 / MIT | — | Engines only, no renderer/IME; libghostty-vt has no stable API | ✗ for this task |
 
-### 2.2 Серверная часть Linux и прецеденты
+### 2.2 Linux server side and precedents
 
-| Проект | Что это | Лицензия [V] | Активность | Вывод | Пригодность |
+| Project | What it is | License [V] | Activity | Conclusion | Suitability |
 |---|---|---|---|---|---|
-| [bluez/bluer](https://github.com/bluez/bluer) | Rust: BlueZ D-Bus (GATT server, advertising, agent) + L2CAP-сокеты | BSD-2-Clause | v0.17.4, 2026-08 | AcquireWrite/AcquireNotify как IO (`gatt/local.rs:902-962`), адрес устройства и MTU в запросах, L2CAP `StreamListener` с `set_security`, MTU | ★★★ основа демона |
-| [kevincar/bless](https://github.com/kevincar/bless) | Python GATT server | MIT | 2026-04 | Работает, AcquireNotify есть; зависит от dbus-next (не обновлялся с 2024-06) | ★★ для прототипов |
-| [ukBaz/python-bluezero](https://github.com/ukBaz/python-bluezero) | Python GATT server | MIT | 2025-03 | Нет Acquire* | ★ |
-| dbus-fast | Python D-Bus | MIT | активен | Основа для своего Python-сервера | ★★ |
-| tinygo-org/bluetooth | Go | BSD-3-подобная | активен | Не сообщает, какое устройство записало (`gatts_linux.go`) | ✗ для multi-client |
-| go-ble/ble, @abandonware/bleno, BTstack | — | — | — | Захватывают HCI (user channel) / требуют остановить bluetoothd | ✗ (монопольный доступ) |
-| [radxa/linkr-bee](https://github.com/radxa/linkr-bee) | ESP32 (Zephyr) мост UART-консоли → BLE/Wi-Fi + клиенты | Apache-2.0 | активен | Не Linux-сервер. Полезно: надёжный протокол с seq/индикациями, документированная потеря данных при переполнении очередей (`docs/BRIDGE_QUEUE_FINDINGS.md`), одно соединение, нет resize | ★ справка; вариант «внешний мост» |
-| [sorah/bluetooth-getty](https://github.com/sorah/bluetooth-getty) | Classic SPP → per-connection systemd unit с agetty | MIT | — | Ближайший прецедент упаковки: .deb, hardened unit, PTY-прокси из-за `vhangup()` в login (`src/session_proxy.rs`) | ★★ образец упаковки/systemd |
-| [monperrus/asteroid-ble-shell](https://github.com/monperrus/asteroid-ble-shell) | NUS-shell на AsteroidOS | GPL-3.0 | 2026-09 | Лучшая модель безопасности среди прецедентов (auth-флаги, «arm»-окно, пиннинг устройства, эскалация SIGHUP→TERM→KILL); PTY 80×24 без resize; без PAM | ★ справка |
-| [VishovVladimir/ble_tty](https://github.com/VishovVladimir/ble_tty), [jonasneves/pi-loop](https://github.com/jonasneves/pi-loop) | NUS ↔ root bash на Pi | нет лицензии | 2026 | Без аутентификации и шифрования; 20-байтные чанки без flow control | ✗ (антипример) |
-| [cocoahuke/coBlue](https://github.com/cocoahuke/coBlue) | BlueZ C-демон + macOS-клиент | MIT | 2018 | iOS-клиент так и не написан | ✗ |
-| [Jakeler/ble-serial](https://github.com/Jakeler/ble-serial) | Десктоп: BLE UART → виртуальный serial | MIT | 2024-12 | Полезен как тестовый клиент | ★★ для тестов |
-| Zephyr/NCS `CONFIG_SHELL_BT_NUS` | MCU-shell поверх NUS | Apache-2.0 | — | Самый массовый «shell over BLE», но MCU, не Linux | ★ |
-| `rfcomm watch … getty` | Classic Bluetooth console | — | — | iOS не может использовать RFCOMM/SPP без MFi | ✗ |
+| [bluez/bluer](https://github.com/bluez/bluer) | Rust: BlueZ D-Bus (GATT server, advertising, agent) + L2CAP sockets | BSD-2-Clause | v0.17.4, 2026-08 | AcquireWrite/AcquireNotify as IO (`gatt/local.rs:902-962`), device address and MTU in requests, L2CAP `StreamListener` with `set_security`, MTU | ★★★ base of the daemon |
+| [kevincar/bless](https://github.com/kevincar/bless) | Python GATT server | MIT | 2026-04 | Works, has AcquireNotify; depends on dbus-next (not updated since 2024-06) | ★★ for prototypes |
+| [ukBaz/python-bluezero](https://github.com/ukBaz/python-bluezero) | Python GATT server | MIT | 2025-03 | No Acquire* | ★ |
+| dbus-fast | Python D-Bus | MIT | active | Base for our own Python server | ★★ |
+| tinygo-org/bluetooth | Go | BSD-3-like | active | Does not report which device wrote (`gatts_linux.go`) | ✗ for multi-client |
+| go-ble/ble, @abandonware/bleno, BTstack | — | — | — | Take over HCI (user channel) / require stopping bluetoothd | ✗ (exclusive access) |
+| [radxa/linkr-bee](https://github.com/radxa/linkr-bee) | ESP32 (Zephyr) bridge of UART console → BLE/Wi-Fi + clients | Apache-2.0 | active | Not a Linux server. Useful: reliable protocol with seq/indications, documented data loss on queue overflow (`docs/BRIDGE_QUEUE_FINDINGS.md`), single connection, no resize | ★ reference; "external bridge" option |
+| [sorah/bluetooth-getty](https://github.com/sorah/bluetooth-getty) | Classic SPP → per-connection systemd unit with agetty | MIT | — | Closest packaging precedent: .deb, hardened unit, PTY proxy because of `vhangup()` in login (`src/session_proxy.rs`) | ★★ packaging/systemd template |
+| [monperrus/asteroid-ble-shell](https://github.com/monperrus/asteroid-ble-shell) | NUS shell on AsteroidOS | GPL-3.0 | 2026-09 | Best security model among the precedents (auth flags, "arm" window, device pinning, SIGHUP→TERM→KILL escalation); PTY 80×24 without resize; no PAM | ★ reference |
+| [VishovVladimir/ble_tty](https://github.com/VishovVladimir/ble_tty), [jonasneves/pi-loop](https://github.com/jonasneves/pi-loop) | NUS ↔ root bash on a Pi | no license | 2026 | No authentication or encryption; 20-byte chunks without flow control | ✗ (counterexample) |
+| [cocoahuke/coBlue](https://github.com/cocoahuke/coBlue) | BlueZ C daemon + macOS client | MIT | 2018 | The iOS client was never written | ✗ |
+| [Jakeler/ble-serial](https://github.com/Jakeler/ble-serial) | Desktop: BLE UART → virtual serial | MIT | 2024-12 | Useful as a test client | ★★ for tests |
+| Zephyr/NCS `CONFIG_SHELL_BT_NUS` | MCU shell over NUS | Apache-2.0 | — | The most widespread "shell over BLE", but MCU, not Linux | ★ |
+| `rfcomm watch … getty` | Classic Bluetooth console | — | — | iOS cannot use RFCOMM/SPP without MFi | ✗ |
 
-**Внешний UART-мост (HM-10/ESP32 → getty):** документированного проекта «телефон → BLE-мост → Linux getty → полноэкранные приложения» не найдено [V: отсутствие в поиске]. Мост добавляет вторую границу управления потоком и не передаёт размер окна; оправдан только для хостов без собственного BLE (тогда linkr-bee — лучшая основа).
-
----
-
-## 3. Сравнение BLE-транспортов
-
-### 3.1 Ограничения платформ
-
-| Параметр | iOS (CoreBluetooth) | Android | Linux/BlueZ (Pi) |
-|---|---|---|---|
-| ATT MTU | Нельзя запросить; ОС выбирает сама (наблюдалось 185/247/527 в зависимости от модели/версии). Размер чанка — `maximumWriteValueLength(.withoutResponse)` [V ADG §58.11; S] | `requestMtu`; с Android 14 всегда 517 при первом вызове [V] | `ExchangeMTU = 517` по умолчанию [V] |
-| Макс. значение атрибута | 512 | 512 (`GATT_MAX_ATTR_LEN`) [V AOSP] | Уведомление длиннее MTU−3 **молча обрезается** (`shared/gatt-server.c:1828`) [V] |
-| DLE / 2M PHY | Автоматически; периферия должна делать LL Length Update до MTU exchange [V ADG]; PHY — по инициативе периферии [S] | `setPreferredPhy` (API 26) [V] | Контроллер CYW43455 — проверить [H] |
-| Интервал соединения | Мин. 15 мс, кратно 15; 11.25 мс только при HID; запрашивает периферия [V ADG §58.6] | `requestConnectionPriority(HIGH)` = 11.25–15 мс [V AOSP config.xml] | Запрос параметров со стороны периферии через D-Bus не выставлен [H] |
-| Управление потоком на запись (клиент → сервер) | `canSendWriteWithoutResponse` + `peripheralIsReady(toSendWriteWithoutResponse:)` [V] | Одна операция в полёте; `onCharacteristicWrite` приходит и для WNR, задерживается при congestion [V AOSP `GattService`] | AcquireWrite: запись подтверждается до чтения приложением; WNR **молча отбрасывается** при EAGAIN (`gatt-database.c:3348-3355`) [V] |
-| Backpressure уведомлений (сервер → клиент) | Нет API [V] | Нет API [V] | Очередь `att->write_queue` неограниченна (`shared/att.c:1681-1687`) [V] |
-| L2CAP CoC | iOS 11+ `openL2CAPChannel(PSM)`; PSM из характеристики `ABDD3056-28FA-441D-A470-55A75A52553A` [V]; баг с несколькими каналами на одно устройство [S] | API 29+ `createL2capChannel` (требует bond) / `createInsecureL2capChannel` [V] | Сокет `SOCK_SEQPACKET`, PSM 0x80–0xFF без привилегий (`l2cap_sock.c:69-80`), credit-based FC в ядре [V] |
-| Фон | `bluetooth-central`: уведомления будят приложение (~10 с); state restoration; не перезапускается после force-quit/выключения BT (QA1962) [V]; CoC в фоне не документирован [H] | FGS `connectedDevice` (Android 14+) [V]; CompanionDeviceManager [V] | — |
-| Pairing | Нельзя инициировать из приложения; триггер — ATT Insufficient Authentication/Encryption [V ADG §58.10] | `createBond()` или неявно при ошибке аутентификации [V] | IO capability задаёт default agent, на уровне всего адаптера [V `adapter.c:9508-9535`] |
-
-### 3.2 Варианты транспорта
-
-| Критерий | Сырой NUS | Собственный GATT-профиль (рекомендуется) | L2CAP CoC |
-|---|---|---|---|
-| Совместимость со сторонними UART-приложениями | Да (только построчный режим) | Нет (опционально — отдельный NUS-сервис совместимости) | Нет |
-| Resize/сигналы/служебные сообщения | Нет (только in-band костыли) | Да (in-band кадрирование) | Да |
-| Backpressure сервер → клиент | Нет | Кредиты на уровне приложения | Нативно, кредиты ядра; на ядрах ≥ 6.10 ещё и по свободному месту приёмного буфера (коммит `ce60b9231b66`) [V] |
-| Backpressure клиент → сервер | ОС клиента + риск потерь в bluetoothd | ОС клиента + кредиты сервера | Нативно |
-| Мульти-клиент на BlueZ 5.66 | Нет (широковещательная рассылка) | Нет (только один клиент) | Да (сокет на `accept()`) |
-| Мульти-клиент на BlueZ ≥ 5.69 | Частично | Да (per-device fd + HUP при отключении) | Да |
-| Пропускная способность | 30–100 KB/s [S] | 30–100 KB/s [S] | WWDC17: до ~49 KB/s на iOS (L2CAP+DLE+15 мс); Nordic: прирост над GATT незначителен [S] |
-| Подтверждённая совместимость iOS/Android ↔ BlueZ | Да | Да | **Не найдено публичного подтверждения** [S] |
-| Работа в фоне iOS | Да | Да | Не документировано [H] |
-| Сложность | Минимальная | Небольшая (~кадр 1–3 байта + кредиты) | Средняя (+ GATT для обнаружения PSM всё равно нужен) |
-
-**Вывод:** собственный GATT-сервис — базовый и обязательный транспорт; L2CAP CoC — опциональное улучшение после эксперимента E2; сырой NUS — только как отдельный необязательный режим совместимости.
-
-Для терминала пропускная способность не узкое место: полная перерисовка экрана 200×60 с SGR — 12–40 KB (0.2–1 с в худшем случае), инкрементальные обновления vim/htop много меньше [H]. Определяющие факторы — **задержка** (эхо нажатия ≈ 2 интервала соединения: ~30–60 мс) и **корректный backpressure** при `cat bigfile` [S/H].
+**External UART bridge (HM-10/ESP32 → getty):** no documented "phone → BLE bridge → Linux getty → full-screen applications" project was found [V: absent from search]. A bridge adds a second flow-control boundary and does not pass the window size; it is justified only for hosts without their own BLE (in which case linkr-bee is the best base).
 
 ---
 
-## 4. Клиентская часть Android и iOS
+## 3. Comparison of BLE transports
 
-### 4.1 Что показал код существующих BLE UART-приложений
+### 3.1 Platform constraints
 
-- Все — лог сообщений, а не терминал: нет парсера CSI, сетки ячеек, альтернативного экрана, Ctrl/Esc/стрелок [V, прил. A §1].
-- Типовая ошибка — декодирование UTF-8 по каждому уведомлению отдельно (`new String(data)` в SimpleBluetoothLeTerminal `TerminalFragment.java:254`, `String(it)` в nRF Toolbox Android `UARTManager.kt:44`): многобайтовые символы на границе пакетов портятся. Терминальный клиент должен отдавать **сырые байты** движку.
-- Полезные паттерны: очередь записи по `onCharacteristicWrite` (Android), gating WNR по `canSendWriteWithoutResponse` (iOS), кредиты Telit TIO как образец backpressure [V].
-- Вывод: ни одно UART-приложение не годится как основа форка; брать надо терминальные/SSH-клиенты.
+| Parameter | iOS (CoreBluetooth) | Android | Linux/BlueZ (Pi) |
+|---|---|---|---|
+| ATT MTU | Cannot be requested; the OS chooses itself (185/247/527 observed depending on model/version). Chunk size — `maximumWriteValueLength(.withoutResponse)` [V ADG §58.11; S] | `requestMtu`; since Android 14 always 517 on the first call [V] | `ExchangeMTU = 517` by default [V] |
+| Max. attribute value | 512 | 512 (`GATT_MAX_ATTR_LEN`) [V AOSP] | A notification longer than MTU−3 is **silently truncated** (`shared/gatt-server.c:1828`) [V] |
+| DLE / 2M PHY | Automatic; the peripheral must do LL Length Update before MTU exchange [V ADG]; PHY — on peripheral's initiative [S] | `setPreferredPhy` (API 26) [V] | CYW43455 controller — to be checked [H] |
+| Connection interval | Min. 15 ms, multiple of 15; 11.25 ms only with HID; requested by the peripheral [V ADG §58.6] | `requestConnectionPriority(HIGH)` = 11.25–15 ms [V AOSP config.xml] | Peripheral-side parameter request is not exposed via D-Bus [H] |
+| Write flow control (client → server) | `canSendWriteWithoutResponse` + `peripheralIsReady(toSendWriteWithoutResponse:)` [V] | One operation in flight; `onCharacteristicWrite` also arrives for WNR, delayed under congestion [V AOSP `GattService`] | AcquireWrite: a write is acknowledged before the application reads it; WNR is **silently dropped** on EAGAIN (`gatt-database.c:3348-3355`) [V] |
+| Notification backpressure (server → client) | No API [V] | No API [V] | The `att->write_queue` queue is unbounded (`shared/att.c:1681-1687`) [V] |
+| L2CAP CoC | iOS 11+ `openL2CAPChannel(PSM)`; PSM from the characteristic `ABDD3056-28FA-441D-A470-55A75A52553A` [V]; bug with several channels to one device [S] | API 29+ `createL2capChannel` (requires a bond) / `createInsecureL2capChannel` [V] | `SOCK_SEQPACKET` socket, PSM 0x80–0xFF without privileges (`l2cap_sock.c:69-80`), credit-based FC in the kernel [V] |
+| Background | `bluetooth-central`: notifications wake the app (~10 s); state restoration; not relaunched after force-quit/Bluetooth off (QA1962) [V]; CoC in the background is undocumented [H] | FGS `connectedDevice` (Android 14+) [V]; CompanionDeviceManager [V] | — |
+| Pairing | Cannot be initiated from the app; trigger — ATT Insufficient Authentication/Encryption [V ADG §58.10] | `createBond()` or implicitly on an authentication error [V] | IO capability is set by the default agent, adapter-wide [V `adapter.c:9508-9535`] |
 
-### 4.2 Терминальные движки (по исходникам)
+### 3.2 Transport options
 
-| Движок | Вход байтов | Выход байтов | Resize | xterm-уровень | Ширина Unicode | Ввод |
+| Criterion | Raw NUS | Custom GATT profile (recommended) | L2CAP CoC |
+|---|---|---|---|
+| Compatibility with third-party UART apps | Yes (line mode only) | No (optionally — a separate NUS compatibility service) | No |
+| Resize/signals/control messages | No (in-band hacks only) | Yes (in-band framing) | Yes |
+| Backpressure server → client | No | Application-level credits | Native, kernel credits; on kernels ≥ 6.10 also based on free receive buffer space (commit `ce60b9231b66`) [V] |
+| Backpressure client → server | Client OS + risk of loss in bluetoothd | Client OS + server credits | Native |
+| Multi-client on BlueZ 5.66 | No (broadcast) | No (single client only) | Yes (socket per `accept()`) |
+| Multi-client on BlueZ ≥ 5.69 | Partial | Yes (per-device fd + HUP on disconnect) | Yes |
+| Throughput | 30–100 KB/s [S] | 30–100 KB/s [S] | WWDC17: up to ~49 KB/s on iOS (L2CAP+DLE+15 ms); Nordic: gain over GATT is insignificant [S] |
+| Confirmed iOS/Android ↔ BlueZ compatibility | Yes | Yes | **No public confirmation found** [S] |
+| iOS background operation | Yes | Yes | Undocumented [H] |
+| Complexity | Minimal | Small (~1–3-byte frame header + credits) | Medium (+ GATT is still needed for PSM discovery) |
+
+**Conclusion:** the custom GATT service is the baseline and mandatory transport; L2CAP CoC is an optional improvement after experiment E2; raw NUS — only as a separate optional compatibility mode.
+
+For a terminal, throughput is not the bottleneck: a full redraw of a 200×60 screen with SGR is 12–40 KB (0.2–1 s in the worst case), incremental vim/htop updates are much smaller [H]. The decisive factors are **latency** (keystroke echo ≈ 2 connection intervals: ~30–60 ms) and **correct backpressure** during `cat bigfile` [S/H].
+
+---
+
+## 4. Android and iOS client side
+
+### 4.1 What the code of existing BLE UART apps showed
+
+- All of them are a message log, not a terminal: no CSI parser, cell grid, alternate screen, Ctrl/Esc/arrows [V, app. A §1].
+- A typical mistake is decoding UTF-8 per notification separately (`new String(data)` in SimpleBluetoothLeTerminal `TerminalFragment.java:254`, `String(it)` in nRF Toolbox Android `UARTManager.kt:44`): multibyte characters on packet boundaries get corrupted. A terminal client must pass **raw bytes** to the engine.
+- Useful patterns: write queue driven by `onCharacteristicWrite` (Android), WNR gating by `canSendWriteWithoutResponse` (iOS), Telit TIO credits as a backpressure model [V].
+- Conclusion: no UART app is suitable as a base for a fork; terminal/SSH clients are what should be taken.
+
+### 4.2 Terminal engines (from the sources)
+
+| Engine | Bytes in | Bytes out | Resize | xterm level | Unicode width | Input |
 |---|---|---|---|---|---|---|
-| ConnectBot termlib | `writeInput` (`TerminalEmulator.kt:107`) | `onKeyboardInput` callback (`:252-275`) | `onResize(cols, rows, px)` | truecolor, мышь, alt screen, bracketed paste, OSC 52 | **старая таблица Markus Kuhn** — риск расхождения с glibc для emoji [H] | TYPE_NULL + compose-режим (`ImeInputView.kt`) |
-| Termux terminal-emulator | `TerminalEmulator.append` (`:688`) | `TerminalOutput.write` | `TerminalSession.updateSize` → JNI (нужен патч) | то же + sixel | Unicode 15 | лучший IME |
-| SwiftTerm | `feed(byteArray:)` (`AppleTerminalView.swift:1264`) | `send(source:data:)` (`TerminalViewDelegate.swift:73`) | `sizeChanged` (`:57`) | то же + Kitty graphics/keyboard; esctest | **Unicode 17** | `UITextInput`, accessory bar с Esc/Ctrl (`iOSAccessoryView.swift:22`) |
+| ConnectBot termlib | `writeInput` (`TerminalEmulator.kt:107`) | `onKeyboardInput` callback (`:252-275`) | `onResize(cols, rows, px)` | truecolor, mouse, alt screen, bracketed paste, OSC 52 | **old Markus Kuhn table** — risk of mismatch with glibc for emoji [H] | TYPE_NULL + compose mode (`ImeInputView.kt`) |
+| Termux terminal-emulator | `TerminalEmulator.append` (`:688`) | `TerminalOutput.write` | `TerminalSession.updateSize` → JNI (needs a patch) | same + sixel | Unicode 15 | best IME |
+| SwiftTerm | `feed(byteArray:)` (`AppleTerminalView.swift:1264`) | `send(source:data:)` (`TerminalViewDelegate.swift:73`) | `sizeChanged` (`:57`) | same + Kitty graphics/keyboard; esctest | **Unicode 17** | `UITextInput`, accessory bar with Esc/Ctrl (`iOSAccessoryView.swift:22`) |
 
-Все три принимают и отдают **сырые байты** и сообщают размер как (cols, rows) — это прямо ложится и на собственный протокол, и на SSH `window-change`.
+All three take and emit **raw bytes** and report the size as (cols, rows) — this maps directly both onto our own protocol and onto SSH `window-change`.
 
-### 4.3 Готовые связки «движок + SSH»
+### 4.3 Ready-made "engine + SSH" combinations
 
-- **Android — ConnectBot** (Apache-2.0) уже связывает termlib и sshlib (`service/TerminalBridge.kt:490-530`: `onKeyboardInput`/`onResize` → `WriteData`/`SetDimensions`). sshlib принимает произвольный транспорт через `SshClientConfig.transportFactory`, и **ConnectBot уже использует это** для цепочек jump-хостов: `transport/SSH.kt:976-1011` (connectbot `0bea3773`) [V, проверено вручную]. Значит, BLE-транспорт для SSH в ConnectBot — это реализация `org.connectbot.sshlib.transport.Transport` поверх GATT + новый тип хоста (`ble://…`) в UI. Попутно бесплатно: менеджер хостов, ключи, extra-keys (`ui/components/TerminalKeyboard.kt`, Apache-2.0), фоновый сервис, уведомления.
-- **iOS — SwiftTerm** содержит демо SSH-терминала на swift-nio-ssh (`TerminalApp/iOSTerminal/UIKitSshTerminalView.swift`, SwiftTerm `c3436be3`): `send` → SSH-канал, `sizeChanged` → window-change, данные канала → `feed`. Для BLE нужно заменить TCP-bootstrap NIO на канал поверх CoreBluetooth [H: умеренный объём; SwiftNIO SSH в своих тестах работает поверх in-memory `EmbeddedChannel` — `EndToEndTests.swift:26-44`]. Готового iOS-приложения-форка нет: Blink — GPLv3, La Terminal / Secure ShellFish — закрытые. iOS-клиент — новое приложение из зрелых компонентов.
+- **Android — ConnectBot** (Apache-2.0) already ties termlib and sshlib together (`service/TerminalBridge.kt:490-530`: `onKeyboardInput`/`onResize` → `WriteData`/`SetDimensions`). sshlib accepts an arbitrary transport via `SshClientConfig.transportFactory`, and **ConnectBot already uses this** for jump-host chains: `transport/SSH.kt:976-1011` (connectbot `0bea3773`) [V, checked manually]. So the BLE transport for SSH in ConnectBot is an implementation of `org.connectbot.sshlib.transport.Transport` over GATT + a new host type (`ble://…`) in the UI. Along the way, for free: host manager, keys, extra-keys (`ui/components/TerminalKeyboard.kt`, Apache-2.0), background service, notifications.
+- **iOS — SwiftTerm** contains an SSH terminal demo on swift-nio-ssh (`TerminalApp/iOSTerminal/UIKitSshTerminalView.swift`, SwiftTerm `c3436be3`): `send` → SSH channel, `sizeChanged` → window-change, channel data → `feed`. For BLE, the NIO TCP bootstrap has to be replaced with a channel over CoreBluetooth [H: moderate effort; SwiftNIO SSH in its own tests runs over the in-memory `EmbeddedChannel` — `EndToEndTests.swift:26-44`]. There is no ready iOS app to fork: Blink is GPLv3, La Terminal / Secure ShellFish are closed. The iOS client is a new app built from mature components.
 
-### 4.4 Общий код между платформами
+### 4.4 Code shared between platforms
 
-Изучены: Flutter (xterm.dart + universal_ble), WebView + xterm.js с нативным BLE-мостом, libvterm/alacritty_terminal через FFI, KMP. Вывод [H, прил. B §4]: **нативный UI на каждой платформе**, общий — только спецификация BLE-кадрирования с тест-векторами (≈500 строк реализации на платформу) или, опционально, Kable/KMP для BLE-слоя. Общий терминальный движок не окупается: рендерер, IME, выделение текста и accessibility всё равно платформенные, а мобильный ввод в xterm.js проблемный (открытые issues).
+Examined: Flutter (xterm.dart + universal_ble), WebView + xterm.js with a native BLE bridge, libvterm/alacritty_terminal via FFI, KMP. Conclusion [H, app. B §4]: **native UI on each platform**; shared — only the BLE framing specification with test vectors (≈500 lines of implementation per platform) or, optionally, Kable/KMP for the BLE layer. A shared terminal engine does not pay off: the renderer, IME, text selection and accessibility are platform-specific anyway, and mobile input in xterm.js is problematic (open issues).
 
-### 4.5 Фон и переподключение
+### 4.5 Background and reconnection
 
-- iOS: режим `bluetooth-central` держит GATT-соединение, уведомления будят приложение; `connect()` не имеет таймаута и подходит для автопереподключения; iOS 17 — `EnableAutoReconnect`. После force-quit или выключения Bluetooth система приложение не перезапускает (QA1962) [V].
-- Android: открытая сессия — только в foreground service типа `connectedDevice`; для фонового переподключения — `autoConnect=true` или CompanionDeviceManager presence [V].
-- Поскольку по ТЗ сессия завершается при разрыве BLE, «переподключение» = новое соединение + новый вход. Политика сохранения сессий (tmux на сервере или на уровне демона) — отдельное решение (вопрос 6). Детальную политику фона ТЗ откладывает.
-
----
-
-## 5. Серверная часть Linux/BlueZ
-
-### 5.1 Взаимодействие с BlueZ
-
-- **Только D-Bus API BlueZ** (`GattManager1.RegisterApplication`, `LEAdvertisingManager1.RegisterAdvertisement`) — без монопольного доступа к адаптеру; регистрации привязаны к D-Bus-соединению и исчезают при остановке процесса (`src/advertising.c:225`) — удобно для удаляемого пакета [V].
-- **Политика D-Bus** upstream и в Trixie разрешает любому локальному пользователю вызывать методы `org.bluez` (`src/bluetooth.conf:26-28`); в Bookworm Debian-патч дополнительно разрешает группе `bluetooth` [V]. Демон может работать от отдельного непривилегированного пользователя (при необходимости — член группы `bluetooth`). Следствие: bluetoothd не является границей безопасности между локальными пользователями — граница аутентификации — SSH/PAM.
-- **`--experimental`, `--compat` и правка `main.conf` не нужны** ни для GATT-сервера, ни для Acquire*, ни для рекламы, ни для L2CAP [V, прил. C §1.8].
-- **AcquireWrite/AcquireNotify** (fd-путь, `doc/org.bluez.GattCharacteristic.rst:156-246`) предпочтительнее `WriteValue`/`PropertiesChanged`: меньше D-Bus-трафика, MTU приходит в опциях; сокет нужно создавать `SOCK_SEQPACKET|SOCK_NONBLOCK` (как в `client/gatt.c:2568` и bluer). bluer отнимает 5 байт от MTU из-за обрезки данных в BlueZ (`bluer/src/gatt/mod.rs:358-364`) [V].
-- **Версии BlueZ** [V]: Debian/RPi OS Bookworm — 5.66, Trixie — 5.82. Per-device AcquireWrite/AcquireNotify (отдельные fd на клиента, HUP при отключении) появились в коммите `8eb1dee87e01` (5.69). На 5.66: один fd на характеристику, уведомления рассылаются всем подписчикам, записи разных устройств сливаются; отключение нужно отслеживать через `Device1.Connected`.
-- **Реклама** останавливается при входящем соединении и автоматически возобновляется ядром только после разрыва (`hci_event.c:5893`, `:3574`); для второго клиента демон должен переподнять рекламу, поддержка состояния контроллером CYW43455 не проверена [V/H].
-- **Сосуществование:** GATT-сервис и реклама добавляются рядом с другими сервисами; L2CAP-слушатель на динамическом PSM не конфликтует с bluetoothd [V]. Затрагивают весь адаптер только настройки pairing (IO capability, Pairable/Bondable) — поэтому рекомендуемая схема не требует их менять (раздел 6.5).
-
-### 5.2 Управление потоком на сервере
-
-- Нужен **прикладной кредитный протокол** в обе стороны [V-обоснование: неограниченная очередь уведомлений; потеря WNR в AcquireWrite при EAGAIN].
-- Направление сервер → клиент: клиент выдаёт кредиты в байтах по мере потребления; демон не читает из сессии (stdout `sshd -i` или PTY master), когда кредиты кончились, — тогда штатно блокируется писатель (ядро PTY / сокет). Это даёт естественный backpressure до `cat bigfile`.
-- Направление клиент → сервер: клиенты ограничены своими ОС (одна запись в полёте / `canSendWriteWithoutResponse`), но чтобы bluetoothd не терял WNR при медленном демоне, демон выдаёт клиенту окно приёма (кредиты), соответствующее свободному месту своего буфера.
-- Механизм с повторной передачей и номерами последовательностей (как в linkr-bee) **не нужен**: link layer BLE надёжен (ACK/CRC), потери возникают только в программных очередях, которые закрываются кредитами; а при разрыве сессия всё равно завершается [H, обосновано].
-
-### 5.3 Сессия: PTY, PAM, controlling TTY, завершение
-
-Два варианта, общие для обеих архитектур:
-
-**(a) `sshd -i` (рекомендуемый)** — демон передаёт поток в per-connection `sshd -i`:
-- `sshd -i` (inetd-режим) поддерживается, в т.ч. после разделения sshd/sshd-session (`sshd.c:1400-1402, 1865-1870`); регрессия OpenSSH сама гоняет сервер через `ProxyCommand … sshd -i` (`regress/test-exec.sh:887`) [V].
-- sshd сам делает PAM (`UsePAM yes`), выделяет PTY, `setsid`/`TIOCSCTTY`, utmp/wtmp/lastlog, `window-change` → `TIOCSWINSZ`, SIGHUP при закрытии; `pam_systemd` создаёт logind-сессию [V для механизмов, прил. C §5].
-- Отдельный конфиг (`sshd -i -f /etc/ble-term/sshd_config`) — не затрагивает сетевой sshd, работает даже если `ssh.service` выключен. В Debian Bookworm (openssh-server 9.2) `ssh.socket` — `Accept=no`, шаблона `ssh@.service` нет [V, локально] — поэтому пакет ставит свой шаблон.
-- Привилегии: запуск через systemd socket activation — `ble-term-session.socket` (`ListenStream=/run/ble-term/session.sock`, `Accept=yes`, `SocketUser=_bleterm`, `SocketMode=0600`) + `ble-term-session@.service` (`ExecStart=-/usr/sbin/sshd -i -f …`, `StandardInput=socket`). **Наш привилегированный код — ноль строк**; демон, разбирающий радиоввод, работает без root [H, стандартный приём systemd].
-- Завершение: разрыв BLE → демон закрывает unix-сокет → sshd получает EOF → закрывает канал и PTY → SIGHUP группе процессов сессии, `pam_close_session`; юнит останавливается, его cgroup убивается [V механизм; H для деталей в связке].
-
-**(b) `login`/`agetty` на PTY (вариант буквального ТЗ):**
-- Тот же socket-activated root-юнит, но запускает маленький PTY-хелпер: `openpty` → `setsid` → `TIOCSCTTY` → `login -p -h ble:<addr>` (как shellinabox) или `agetty -` [V, прил. C §5.1]; master-fd передаётся демону через `SCM_RIGHTS` либо хелпер сам проксирует.
-- Обязательно учесть: util-linux `login` делает `vhangup()` (`login.c:600-622`), master временно отдаёт EIO — прокси должен это переживать (как `systemd/src/shared/ptyfwd.c:905-912` и bluetooth-getty) [V].
-- Resize — собственным служебным сообщением → `TIOCSWINSZ` на master.
-- Этот хелпер — наш собственный root-код (~200–400 строк, C или Rust) [H].
-
-**Для обоих вариантов:** `pam_systemd` переносит процессы пользователя в `session-N.scope`, поэтому `KillMode=control-group` нашего юнита **не убивает** shell-дерево; поведение по умолчанию как у ssh (SIGHUP; tmux/nohup выживают). Для строгого «убить всё» — `org.freedesktop.login1.Manager.TerminateSession` [V механизм; вопрос 6].
-
-### 5.4 Библиотеки и язык демона
-
-Рекомендуется **Rust + bluer** (BSD-2): единственная найденная библиотека, где одновременно есть GATT-сервер через D-Bus с AcquireWrite/AcquireNotify, сведения об устройстве и MTU в запросах, L2CAP-сокеты с уровнем безопасности и асинхронность; на выходе статический бинарник с минимумом зависимостей [V, прил. C §3]. Альтернатива — Python + dbus-fast (быстрее прототип, больше runtime-зависимостей; bless завязан на неподдерживаемый dbus-next).
-
-### 5.5 Пакет
-
-`.deb` (бинарник демона; `ble-term.service` от `_bleterm`/`DynamicUser`, `After=bluetooth.service`, `PartOf=bluetooth.service` для перерегистрации при рестарте bluetoothd; `ble-term-session.socket` + `ble-term-session@.service`; `sysusers.d`; `/etc/ble-term/sshd_config` и конфиг демона). Зависимости: `bluez`, `openssh-server` (только бинарник sshd; сетевой сервис может оставаться выключенным). Удаление: остановка юнитов — регистрации в BlueZ исчезают; созданные bond'ы (если включён pairing) остаются в `/var/lib/bluetooth` — документировать. Образец hardened-юнита — sorah/bluetooth-getty (`RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH`, `ProtectSystem=strict` и т.д.) [V].
+- iOS: the `bluetooth-central` mode keeps the GATT connection, notifications wake the app; `connect()` has no timeout and is suitable for auto-reconnect; iOS 17 — `EnableAutoReconnect`. After a force-quit or Bluetooth being turned off, the system does not relaunch the app (QA1962) [V].
+- Android: an open session — only in a foreground service of type `connectedDevice`; for background reconnection — `autoConnect=true` or CompanionDeviceManager presence [V].
+- Since per the brief the session ends when BLE disconnects, "reconnection" = a new connection + a new login. The session persistence policy (tmux on the server or at the daemon level) is a separate decision (question 6). The brief defers the detailed background policy.
 
 ---
 
-## 6. Предлагаемая архитектура
+## 5. Linux/BlueZ server side
 
-### 6.1 Компоненты
+### 5.1 Interaction with BlueZ
+
+- **BlueZ D-Bus API only** (`GattManager1.RegisterApplication`, `LEAdvertisingManager1.RegisterAdvertisement`) — no exclusive access to the adapter; registrations are bound to the D-Bus connection and disappear when the process stops (`src/advertising.c:225`) — convenient for a removable package [V].
+- **D-Bus policy** upstream and in Trixie allows any local user to call `org.bluez` methods (`src/bluetooth.conf:26-28`); in Bookworm a Debian patch additionally allows the `bluetooth` group [V]. The daemon can run as a separate unprivileged user (a member of the `bluetooth` group if needed). Consequence: bluetoothd is not a security boundary between local users — the authentication boundary is SSH/PAM.
+- **`--experimental`, `--compat` and editing `main.conf` are not needed** for the GATT server, Acquire*, advertising, or L2CAP [V, app. C §1.8].
+- **AcquireWrite/AcquireNotify** (fd path, `doc/org.bluez.GattCharacteristic.rst:156-246`) are preferable to `WriteValue`/`PropertiesChanged`: less D-Bus traffic, MTU arrives in the options; the socket must be created as `SOCK_SEQPACKET|SOCK_NONBLOCK` (as in `client/gatt.c:2568` and bluer). bluer subtracts 5 bytes from the MTU because of data truncation in BlueZ (`bluer/src/gatt/mod.rs:358-364`) [V].
+- **BlueZ versions** [V]: Debian/RPi OS Bookworm — 5.66, Trixie — 5.82. Per-device AcquireWrite/AcquireNotify (separate fds per client, HUP on disconnect) appeared in commit `8eb1dee87e01` (5.69). On 5.66: one fd per characteristic, notifications are sent to all subscribers, writes from different devices are merged; disconnection has to be tracked via `Device1.Connected`.
+- **Advertising** stops on an incoming connection and is automatically resumed by the kernel only after a disconnect (`hci_event.c:5893`, `:3574`); for a second client the daemon must re-enable advertising; support for this state by the CYW43455 controller has not been verified [V/H].
+- **Coexistence:** the GATT service and advertising are added alongside other services; an L2CAP listener on a dynamic PSM does not conflict with bluetoothd [V]. Only pairing settings (IO capability, Pairable/Bondable) affect the whole adapter — which is why the recommended scheme does not require changing them (section 6.5).
+
+### 5.2 Flow control on the server
+
+- An **application-level credit protocol** is needed in both directions [V rationale: unbounded notification queue; WNR loss in AcquireWrite on EAGAIN].
+- Server → client direction: the client grants credits in bytes as it consumes data; the daemon does not read from the session (stdout of `sshd -i` or the PTY master) when credits run out — the writer then blocks normally (PTY kernel / socket). This gives natural backpressure up to `cat bigfile`.
+- Client → server direction: clients are limited by their OSes (one write in flight / `canSendWriteWithoutResponse`), but so that bluetoothd does not lose WNR when the daemon is slow, the daemon grants the client a receive window (credits) matching the free space in its buffer.
+- A mechanism with retransmission and sequence numbers (as in linkr-bee) is **not needed**: the BLE link layer is reliable (ACK/CRC), losses occur only in software queues, which are covered by credits; and on disconnect the session ends anyway [H, justified].
+
+### 5.3 Session: PTY, PAM, controlling TTY, termination
+
+Two options, common to both architectures:
+
+**(a) `sshd -i` (recommended)** — the daemon passes the stream to a per-connection `sshd -i`:
+- `sshd -i` (inetd mode) is supported, including after the sshd/sshd-session split (`sshd.c:1400-1402, 1865-1870`); the OpenSSH regression suite itself runs the server via `ProxyCommand … sshd -i` (`regress/test-exec.sh:887`) [V].
+- sshd itself does PAM (`UsePAM yes`), allocates the PTY, `setsid`/`TIOCSCTTY`, utmp/wtmp/lastlog, `window-change` → `TIOCSWINSZ`, SIGHUP on close; `pam_systemd` creates a logind session [V for the mechanisms, app. C §5].
+- A separate config (`sshd -i -f /etc/ble-term/sshd_config`) — does not affect the network sshd, works even if `ssh.service` is disabled. In Debian Bookworm (openssh-server 9.2) `ssh.socket` is `Accept=no`, there is no `ssh@.service` template [V, locally] — so the package installs its own template.
+- Privileges: launch via systemd socket activation — `ble-term-session.socket` (`ListenStream=/run/ble-term/session.sock`, `Accept=yes`, `SocketUser=_bleterm`, `SocketMode=0600`) + `ble-term-session@.service` (`ExecStart=-/usr/sbin/sshd -i -f …`, `StandardInput=socket`). **Our privileged code is zero lines**; the daemon that parses radio input runs without root [H, standard systemd technique].
+- Termination: BLE disconnect → the daemon closes the unix socket → sshd gets EOF → closes the channel and PTY → SIGHUP to the session process group, `pam_close_session`; the unit stops, its cgroup is killed [V mechanism; H for the details in combination].
+
+**(b) `login`/`agetty` on a PTY (literal-brief option):**
+- The same socket-activated root unit, but it starts a small PTY helper: `openpty` → `setsid` → `TIOCSCTTY` → `login -p -h ble:<addr>` (like shellinabox) or `agetty -` [V, app. C §5.1]; the master fd is passed to the daemon via `SCM_RIGHTS`, or the helper proxies by itself.
+- Must be taken into account: util-linux `login` does `vhangup()` (`login.c:600-622`), the master temporarily returns EIO — the proxy must survive this (like `systemd/src/shared/ptyfwd.c:905-912` and bluetooth-getty) [V].
+- Resize — via our own control message → `TIOCSWINSZ` on the master.
+- This helper is our own root code (~200–400 lines, C or Rust) [H].
+
+**For both options:** `pam_systemd` moves the user's processes into `session-N.scope`, so `KillMode=control-group` of our unit **does not kill** the shell tree; the default behavior is like ssh (SIGHUP; tmux/nohup survive). For a strict "kill everything" — `org.freedesktop.login1.Manager.TerminateSession` [V mechanism; question 6].
+
+### 5.4 Libraries and daemon language
+
+Recommended: **Rust + bluer** (BSD-2): the only library found that simultaneously has a GATT server via D-Bus with AcquireWrite/AcquireNotify, device information and MTU in requests, L2CAP sockets with a security level, and async; the output is a static binary with minimal dependencies [V, app. C §3]. Alternative — Python + dbus-fast (faster prototype, more runtime dependencies; bless is tied to the unmaintained dbus-next).
+
+### 5.5 Package
+
+`.deb` (daemon binary; `ble-term.service` as `_bleterm`/`DynamicUser`, `After=bluetooth.service`, `PartOf=bluetooth.service` for re-registration when bluetoothd restarts; `ble-term-session.socket` + `ble-term-session@.service`; `sysusers.d`; `/etc/ble-term/sshd_config` and the daemon config). Dependencies: `bluez`, `openssh-server` (sshd binary only; the network service can stay disabled). Removal: stopping the units — the registrations in BlueZ disappear; created bonds (if pairing is enabled) remain in `/var/lib/bluetooth` — to be documented. Hardened unit template — sorah/bluetooth-getty (`RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH`, `ProtectSystem=strict`, etc.) [V].
+
+---
+
+## 6. Proposed architecture
+
+### 6.1 Components
 
 ```
  ┌──────────────── Android ────────────────┐      ┌────────────────── iOS ──────────────────┐
- │ ConnectBot (форк, Apache-2.0)            │      │ Новое приложение                         │
+ │ ConnectBot (fork, Apache-2.0)            │      │ New application                          │
  │  termlib (libvterm) ── TerminalBridge    │      │  SwiftTerm TerminalView                  │
  │        │ bytes / onResize                │      │        │ send / sizeChanged / feed        │
  │  sshlib SshClient (host-key pinning,     │      │  SwiftNIO SSH (NIOSSHHandler,             │
  │        pubkey/password, window-change)   │      │        host-key pinning)                 │
  │        │ Transport (read/write/close)    │      │        │ custom NIO Channel               │
- │  BleTransport ── BleStream (кредиты,     │      │  BleStream (кредиты, кадры)              │
- │        кадры) ── android.bluetooth GATT  │      │        └── CoreBluetooth GATT            │
+ │  BleTransport ── BleStream (credits,     │      │  BleStream (credits, frames)             │
+ │        frames) ── android.bluetooth GATT │      │        └── CoreBluetooth GATT            │
  │  FGS connectedDevice, CDM                │      │  bluetooth-central background mode       │
  └────────────────────┬─────────────────────┘      └────────────────────┬─────────────────────┘
-                      │            BLE (LE Secure Connections — опционально)                  │
+                      │            BLE (LE Secure Connections — optional)                    │
                       └───────────────┬────────────────────────────────────┘
-                                      │  GATT-сервис «BLE-Term»
+                                      │  GATT service "BLE-Term"
                                       │   • Stream-In  : write-without-response (+write)
                                       │   • Stream-Out : notify
-                                      │   • Info       : read (версия протокола, возможности)
-                                      │   • L2CAP PSM  : read, UUID ABDD3056-… (этап 4)
+                                      │   • Info       : read (protocol version, capabilities)
+                                      │   • L2CAP PSM  : read, UUID ABDD3056-… (stage 4)
  ┌────────────────────────────────────┼─────────────── Linux (Raspberry Pi) ─────────────────────┐
- │  bluetoothd (системный, без изменений конфигурации)                                           │
+ │  bluetoothd (system, no configuration changes)                                                │
  │        ▲ D-Bus: GattManager1, LEAdvertisingManager1, AcquireWrite/AcquireNotify (fd)           │
- │  ble-term-daemon (Rust/bluer, пользователь _bleterm, без root)                                 │
- │     • реклама, GATT-приложение, учёт соединений (Device1.Connected / HUP fd)                   │
- │     • BleStream: кадрирование, кредиты, таймауты, лимит клиентов                               │
- │     • на каждое соединение: connect() в /run/ble-term/session.sock                             │
- │        ▼ AF_UNIX (поток байтов SSH)                                                            │
+ │  ble-term-daemon (Rust/bluer, user _bleterm, no root)                                          │
+ │     • advertising, GATT application, connection tracking (Device1.Connected / HUP fd)          │
+ │     • BleStream: framing, credits, timeouts, client limit                                      │
+ │     • per connection: connect() to /run/ble-term/session.sock                                  │
+ │        ▼ AF_UNIX (SSH byte stream)                                                             │
  │  systemd: ble-term-session.socket (Accept=yes) → ble-term-session@N.service (root)             │
  │        ExecStart=-/usr/sbin/sshd -i -f /etc/ble-term/sshd_config   StandardInput=socket        │
  │           └─ PAM (common-auth, pam_systemd, pam_faillock) → PTY /dev/pts/N → login shell        │
  └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Потоки данных
+### 6.2 Data flows
 
 ```
-Нажатие клавиши (Android):
- termlib.onKeyboardInput(bytes) → SshClient channel data → sshlib шифрует (≈36–48 B)
- → BleTransport.write → BleStream: кадр DATA, ждёт кредит → writeCharacteristic(WNR)
- → onCharacteristicWrite → следующий кадр
- → bluetoothd → AcquireWrite fd → daemon: снять кадр, данные → unix socket → sshd stdin
- → PTY master → line discipline → приложение (vim)
+Keystroke (Android):
+ termlib.onKeyboardInput(bytes) → SshClient channel data → sshlib encrypts (≈36–48 B)
+ → BleTransport.write → BleStream: DATA frame, waits for a credit → writeCharacteristic(WNR)
+ → onCharacteristicWrite → next frame
+ → bluetoothd → AcquireWrite fd → daemon: unwrap frame, data → unix socket → sshd stdin
+ → PTY master → line discipline → application (vim)
 
-Вывод (сервер → клиент):
- vim → PTY → sshd → unix socket → daemon читает, ТОЛЬКО если есть кредиты клиента
- → кадры ≤ MTU−5 → AcquireNotify fd → bluetoothd → notify
- → клиент: BleStream собирает поток, по мере потребления SSH-слоем шлёт CREDIT
- → sshlib/SwiftNIO SSH расшифровывает → termlib.writeInput / SwiftTerm.feed
+Output (server → client):
+ vim → PTY → sshd → unix socket → daemon reads ONLY if the client has credits
+ → frames ≤ MTU−5 → AcquireNotify fd → bluetoothd → notify
+ → client: BleStream reassembles the stream, sends CREDIT as the SSH layer consumes it
+ → sshlib/SwiftNIO SSH decrypts → termlib.writeInput / SwiftTerm.feed
 
 Resize:
  termlib.onResize / SwiftTerm.sizeChanged → SSH "window-change" → sshd → TIOCSWINSZ → SIGWINCH
 
-Разрыв BLE:
- HUP на per-device fd (BlueZ ≥5.69) или Device1.Connected=false (5.66) → daemon закрывает
- unix socket → sshd: EOF → закрыть PTY → SIGHUP сессии → pam_close_session → юнит завершён
+BLE disconnect:
+ HUP on per-device fd (BlueZ ≥5.69) or Device1.Connected=false (5.66) → daemon closes
+ unix socket → sshd: EOF → close PTY → SIGHUP to session → pam_close_session → unit finished
 ```
 
-### 6.3 Протокол BleStream (черновик, уточняется после экспериментов)
+### 6.3 BleStream protocol (draft, to be refined after experiments)
 
-- Один GATT-сервис с собственным 128-битным UUID; две характеристики потока. Служебные сообщения — **in-band** (сохраняется порядок относительно данных, не зависит от планирования разных характеристик в ОС).
-- Кадр = 1 байт типа + данные: `HELLO(version, caps, rx_window)`, `DATA(bytes)`, `CREDIT(u32 bytes)`, `CLOSE(reason)`, `PING/PONG`. Без номеров последовательностей (обоснование в 5.2).
-- Перед первым `DATA` — обмен `HELLO`; сервер не открывает сессию (не дёргает `sshd`) до `HELLO` — защита от «пустых» подключений; таймаут неактивного/недоаутентифицированного соединения → `Device1.Disconnect()`.
-- Размер кадра — по MTU, полученному в опциях AcquireNotify/AcquireWrite, минус запас bluer.
-- Транспорт непрозрачен: внутри — SSH-поток (вариант 1) или терминальный поток с `RESIZE` (вариант 7.1). Это позволяет выбрать вариант сессии (вопрос 1), не меняя BLE-слой.
+- One GATT service with its own 128-bit UUID; two stream characteristics. Control messages are **in-band** (order relative to data is preserved, independent of how the OS schedules different characteristics).
+- Frame = 1 type byte + data: `HELLO(version, caps, rx_window)`, `DATA(bytes)`, `CREDIT(u32 bytes)`, `CLOSE(reason)`, `PING/PONG`. No sequence numbers (rationale in 5.2).
+- Before the first `DATA` — a `HELLO` exchange; the server does not open a session (does not start `sshd`) before `HELLO` — protection against "empty" connections; timeout of an idle/not-yet-authenticated connection → `Device1.Disconnect()`.
+- Frame size — based on the MTU received in the AcquireNotify/AcquireWrite options, minus the bluer margin.
+- The transport is opaque: inside is the SSH stream (option 1) or a terminal stream with `RESIZE` (option 7.1). This allows choosing the session option (question 1) without changing the BLE layer.
 
-### 6.4 Мульти-клиент
+### 6.4 Multi-client
 
-MVP — **один активный клиент** (остальным `CLOSE(busy)` и отключение). Архитектура (per-connection состояние, отдельный `sshd -i` на соединение) мульти-клиент допускает: на BlueZ ≥ 5.69 через per-device fd, на 5.66 — только через L2CAP CoC. Плюс нужен эксперимент E3 (реклама при активном соединении на CYW43455).
+MVP — **one active client** (others get `CLOSE(busy)` and are disconnected). The architecture (per-connection state, a separate `sshd -i` per connection) allows multi-client: on BlueZ ≥ 5.69 via per-device fds, on 5.66 — only via L2CAP CoC. In addition, experiment E3 is needed (advertising while a connection is active on CYW43455).
 
-### 6.5 Безопасность (рекомендуемая схема)
+### 6.5 Security (recommended scheme)
 
-- **Аутентичность сервера:** SSH host key, отдельный для BLE-Term или системный; клиент пиннит отпечаток через QR-код/напечатанный fingerprint или TOFU при первом подключении. Это закрывает MITM при первом контакте и фишинг через поддельный «Pi» (BLESA-класс), что BLE-pairing на headless-устройстве не обеспечивает [V, прил. E §1, §3].
-- **Аутентичность пользователя:** стандартный PAM через sshd (пароль) и/или публичный ключ из Android Keystore / iOS Secure Enclave; `pam_faillock`, `MaxAuthTries`, запрет root в `/etc/ble-term/sshd_config`.
-- **Конфиденциальность:** шифрование SSH (curve25519 + AES-GCM/ChaCha20-Poly1305); `ObscureKeystrokeTiming` отключить (sshlib: `obscureKeystrokeTimingIntervalMs = 0`), иначе ~2 KB/s служебного трафика [V].
-- **BLE-уровень по умолчанию — без обязательного pairing** (encrypt-флаги не ставятся): не нужен default agent, не меняются Pairable/Bondable/IO capability адаптера, нет системных диалогов pairing и проблем с «забытыми» bond'ами на iOS. Атака на канал до аутентификации SSH равна атаке на сетевой sshd — стандартная, хорошо защищённая поверхность.
-- **Опциональное усиление (конфиг):** LE Secure Connections Just Works + default agent с «окном pairing» по кнопке/CLI (`RequestAuthorization`, `device.c:7972`) + `encrypt-*` флаги — снижает DoS/предаутентификационную поверхность и скрывает метаданные трафика [V механизм]. Статический passkey на Linux **невозможен** без патча ядра (ключ генерирует ядро, `smp.c:2805-2815`) и всё равно был бы слабым (CVE-2020-26558) [V].
-- Вне зависимости от режима: «близость» не является фактором аутентификации (релей-атаки NCC 2022), автологин по bonded-устройству запрещён [V].
+- **Server authenticity:** an SSH host key, dedicated to BLE-Term or the system one; the client pins the fingerprint via a QR code/printed fingerprint or TOFU on first connection. This closes MITM on first contact and phishing via a fake "Pi" (BLESA class), which BLE pairing on a headless device does not provide [V, app. E §1, §3].
+- **User authenticity:** standard PAM via sshd (password) and/or a public key from Android Keystore / iOS Secure Enclave; `pam_faillock`, `MaxAuthTries`, root login disabled in `/etc/ble-term/sshd_config`.
+- **Confidentiality:** SSH encryption (curve25519 + AES-GCM/ChaCha20-Poly1305); disable `ObscureKeystrokeTiming` (sshlib: `obscureKeystrokeTimingIntervalMs = 0`), otherwise ~2 KB/s of overhead traffic [V].
+- **BLE level by default — no mandatory pairing** (encrypt flags are not set): no default agent is needed, the adapter's Pairable/Bondable/IO capability are not changed, there are no system pairing dialogs and no problems with "forgotten" bonds on iOS. An attack on the channel before SSH authentication is equivalent to an attack on a network sshd — a standard, well-protected surface.
+- **Optional hardening (config):** LE Secure Connections Just Works + a default agent with a "pairing window" opened by button/CLI (`RequestAuthorization`, `device.c:7972`) + `encrypt-*` flags — reduces the DoS/pre-authentication surface and hides traffic metadata [V mechanism]. A static passkey on Linux is **impossible** without a kernel patch (the key is generated by the kernel, `smp.c:2805-2815`) and would be weak anyway (CVE-2020-26558) [V].
+- Regardless of mode: "proximity" is not an authentication factor (NCC 2022 relay attacks), auto-login by a bonded device is forbidden [V].
 
-### 6.6 Критерии ТЗ
+### 6.6 Brief criteria
 
-| Требование | Как закрывается |
+| Requirement | How it is met |
 |---|---|
-| Только BLE, без IP | GATT/L2CAP; SSH — лишь протокол поверх байтового потока, сети нет |
+| BLE only, no IP | GATT/L2CAP; SSH is just a protocol over a byte stream, there is no network |
 | vim/htop/tmux/nmtui, xterm, Unicode, Ctrl, resize | termlib/SwiftTerm + SSH window-change |
-| Повторное использование зрелого клиента | Форк ConnectBot; SwiftTerm + SwiftNIO SSH (готовая связка в демо SwiftTerm) |
-| Стандартные PTY и PAM, системная аутентификация | sshd: PTY + PAM + logind; `login`/`agetty` — только в варианте 7.1 (вопрос 1) |
-| Минимум вмешательства в BlueZ, сосуществование | Только D-Bus-регистрации, без правки `main.conf`, без захвата адаптера, без default agent по умолчанию |
-| Установка/удаление как пакет | `.deb` + systemd-юниты, без постоянного состояния в bluetoothd |
-| Завершение сессии при разрыве | EOF → sshd → SIGHUP; строгий режим — TerminateSession |
-| Минимум привилегий | Демон без root; root только у sshd через socket activation |
-| Без root/jailbreak на телефонах | Только публичные API (CoreBluetooth, android.bluetooth) |
+| Reuse of a mature client | ConnectBot fork; SwiftTerm + SwiftNIO SSH (ready combination in the SwiftTerm demo) |
+| Standard PTY and PAM, system authentication | sshd: PTY + PAM + logind; `login`/`agetty` — only in option 7.1 (question 1) |
+| Minimal intrusion into BlueZ, coexistence | D-Bus registrations only, no `main.conf` edits, no adapter takeover, no default agent by default |
+| Install/remove as a package | `.deb` + systemd units, no persistent state in bluetoothd |
+| Session termination on disconnect | EOF → sshd → SIGHUP; strict mode — TerminateSession |
+| Least privilege | Daemon without root; root only for sshd via socket activation |
+| No root/jailbreak on phones | Public APIs only (CoreBluetooth, android.bluetooth) |
 
 ---
 
-## 7. Альтернативные архитектуры и причины отклонения
+## 7. Alternative architectures and reasons for rejection
 
-### 7.1 Собственный терминальный протокол + `login`/PAM (главная альтернатива — не отклонена окончательно)
+### 7.1 Custom terminal protocol + `login`/PAM (main alternative — not finally rejected)
 
-BleStream с кадрами `DATA`/`RESIZE`/`SIGNAL`; на сервере PTY-хелпер с `login -p -h ble:<addr>`; клиенты подключают termlib/SwiftTerm к BLE напрямую (glue ~0.5–1 день на платформу [H]).
+BleStream with `DATA`/`RESIZE`/`SIGNAL` frames; on the server, a PTY helper with `login -p -h ble:<addr>`; clients connect termlib/SwiftTerm to BLE directly (glue ~0.5–1 day per platform [H]).
 
-- **Плюсы:** буквально соответствует ТЗ (`agetty`/`login`); нет SSH-библиотек в клиентах; ~на 35–50 байт меньше на нажатие; не нужен `openssh-server`.
-- **Минусы:** (1) безопасность целиком на BLE-pairing, а на headless-устройстве он либо Just Works (нет защиты от MITM, пароль login уходит открытым текстом внутри канала), либо требует показать passkey — без дисплея непрактично [V, прил. E §3]; добавление защиты на уровне приложения (Noise) = переизобретение SSH; (2) свой root-хелпер (PTY, vhangup/EIO, utmp, передача master-fd); (3) на Android теряется готовая интеграция ConnectBot с SSH — нужен свой «хост-тип» и транспорт для termlib; (4) нет аутентификации по ключам.
-- **Статус:** запасной вариант; BLE-слой спроектирован так, что переход между 6 и 7.1 не меняет транспорт.
+- **Pros:** literally matches the brief (`agetty`/`login`); no SSH libraries in the clients; ~35–50 bytes less per keystroke; `openssh-server` not needed.
+- **Cons:** (1) security rests entirely on BLE pairing, and on a headless device it is either Just Works (no MITM protection, the login password travels in plaintext inside the channel) or requires displaying a passkey — impractical without a display [V, app. E §3]; adding protection at the application level (Noise) = reinventing SSH; (2) our own root helper (PTY, vhangup/EIO, utmp, passing the master fd); (3) on Android the ready ConnectBot–SSH integration is lost — our own "host type" and transport for termlib are needed; (4) no key-based authentication.
+- **Status:** fallback option; the BLE layer is designed so that switching between 6 and 7.1 does not change the transport.
 
-### 7.2 Сырой NUS + PTY (pi-loop, ble_tty, asteroid-ble-shell)
-Нет resize, нет backpressure, нет служебного канала; совместим со сторонними UART-приложениями, но только в построчном режиме. **Отклонено** как основной вариант; возможен как отдельный выключенный по умолчанию режим совместимости (вопрос 7).
+### 7.2 Raw NUS + PTY (pi-loop, ble_tty, asteroid-ble-shell)
+No resize, no backpressure, no control channel; compatible with third-party UART apps, but only in line mode. **Rejected** as the main option; possible as a separate compatibility mode disabled by default (question 7).
 
-### 7.3 L2CAP CoC как единственный транспорт
-Лучший backpressure и мульти-клиент на любой версии BlueZ, но нет подтверждённой совместимости iOS/Android ↔ BlueZ, не документирована работа в фоне iOS, баги iOS с несколькими каналами, фрагментация Android; GATT всё равно нужен для обнаружения PSM. **Отклонено как единственный**; планируется как улучшение (этап 4) после эксперимента E2.
+### 7.3 L2CAP CoC as the only transport
+Best backpressure and multi-client on any BlueZ version, but no confirmed iOS/Android ↔ BlueZ compatibility, iOS background operation is undocumented, iOS bugs with several channels, Android fragmentation; GATT is needed for PSM discovery anyway. **Rejected as the only transport**; planned as an improvement (stage 4) after experiment E2.
 
-### 7.4 Noise (или иной прикладной канал) + собственный протокол
-Легче SSH (рукопожатие ~100–200 B), но придётся заново делать аутентификацию пользователя, PTY/resize, rekeying, аудит; библиотеки менее проверены. **Отклонено** — SSH даёт всё это зрелым кодом, а его накладные расходы для BLE приемлемы (рукопожатие ~3–8 KB, ~0.1–0.5 с [H]).
+### 7.4 Noise (or another application-level channel) + custom protocol
+Lighter than SSH (handshake ~100–200 B), but user authentication, PTY/resize, rekeying, and auditing would all have to be redone; the libraries are less proven. **Rejected** — SSH provides all of this with mature code, and its overhead for BLE is acceptable (handshake ~3–8 KB, ~0.1–0.5 s [H]).
 
-### 7.5 Общий кроссплатформенный терминальный UI (Flutter / WebView+xterm.js / libvterm-FFI / KMP)
-xterm.dart замедлился и работает со строками; flutter_blue_plus — лицензионная ловушка; xterm.js — проблемы мобильного ввода; FFI-движки требуют своих рендереров (6–10+ человеко-недель). **Отклонено** в пользу нативных зрелых движков [H-оценки, прил. B §4].
+### 7.5 Shared cross-platform terminal UI (Flutter / WebView+xterm.js / libvterm-FFI / KMP)
+xterm.dart has slowed down and works with strings; flutter_blue_plus is a licensing trap; xterm.js has mobile input problems; FFI engines need their own renderers (6–10+ person-weeks). **Rejected** in favor of native mature engines [H estimates, app. B §4].
 
-### 7.6 Внешний BLE-UART-мост (ESP32/linkr-bee → serial getty)
-Не требует BLE на хосте и изменений Linux, но: дополнительное железо, нет resize, вторая граница flow control, linkr-bee — одно соединение и документированные потери в очередях. **Отклонено** для референсной платформы (у Pi есть свой BLE); уместно как отдельный продукт для хостов без BLE.
+### 7.6 External BLE-UART bridge (ESP32/linkr-bee → serial getty)
+Requires neither BLE on the host nor Linux changes, but: additional hardware, no resize, a second flow-control boundary, linkr-bee — single connection and documented queue losses. **Rejected** for the reference platform (the Pi has its own BLE); appropriate as a separate product for hosts without BLE.
 
-### 7.7 Стеки с монопольным доступом к HCI (bleno, go-ble, BTstack)
-Противоречат требованию сосуществования. **Отклонено.**
+### 7.7 Stacks with exclusive HCI access (bleno, go-ble, BTstack)
+Contradict the coexistence requirement. **Rejected.**
 
 ### 7.8 Bluetooth Classic (RFCOMM/SPP getty)
-iOS-приложениям недоступен без MFi [V, MFi FAQ]. **Отклонено.**
+Not available to iOS apps without MFi [V, MFi FAQ]. **Rejected.**
 
-### 7.9 Форк Termux / Blink
-Termux-app — GPLv3 (используются только Apache-библиотеки движка); Blink — GPLv3, распространение форка через App Store юридически рискованно [H]. **Отклонено** как основа приложений.
+### 7.9 Termux / Blink fork
+Termux-app is GPLv3 (only the Apache-licensed engine libraries are used); Blink is GPLv3, distributing a fork via the App Store is legally risky [H]. **Rejected** as a base for the apps.
 
 ---
 
-## 8. Риски, неизвестные и необходимые эксперименты
+## 8. Risks, unknowns and required experiments
 
-| # | Риск / неизвестное | Влияние | Эксперимент |
+| # | Risk / unknown | Impact | Experiment |
 |---|---|---|---|
-| E1 | Реальные MTU, интервал соединения, задержка эха и пропускная способность GATT notify/WNR между Pi (CYW43455) и современными iPhone/Android; поведение bluetoothd при всплеске уведомлений | Отзывчивость, размер кредитного окна | Прототип BleStream на bluer: замер RTT эха, KB/s, памяти bluetoothd при `cat` с кредитами и без |
-| E2 | iOS/Android ↔ BlueZ L2CAP CoC (без шифрования и с ним), инициирует ли iOS pairing при отказе по безопасности, CoC в фоне на iOS | Этап 4 (CoC) | `openL2CAPChannel` / `createInsecureL2capChannel` к bluer `StreamListener` |
-| E3 | Несколько одновременных LE-соединений на CYW43455; переподнятие рекламы при активном соединении | Мульти-клиент | `btmgmt info`, LE supported states, два телефона |
-| E4 | sshlib поверх BLE-`Transport` на Android (JVM 17 target, desugaring); SwiftNIO SSH поверх собственного Channel на CoreBluetooth; время рукопожатия (mlkem768x25519 vs curve25519) | Сроки клиентов | Минимальные PoC на обеих платформах |
-| E5 | Расхождение ширины Unicode (старая таблица libvterm в termlib vs glibc Pi) | Искажения vim/htop с emoji/CJK | Тест-строки emoji/CJK в vim/htop/tmux; при необходимости обновить таблицу в termlib или перейти на движок Termux |
-| E6 | Поведение iOS в фоне с открытой сессией (заморозка, частота пробуждений), Android FGS у OEM (Samsung/Xiaomi) | UX фона | Сценарии блокировки экрана/переключения приложений |
-| E7 | `sshd -i` через socket activation: завершение по EOF, utmp/`who`, `pam_systemd`, поведение на OpenSSH 9.2 (Bookworm) и 10.x (Trixie) | Корректность сессий | Тест на обоих выпусках ОС |
-| E8 | BlueZ 5.66: отсутствие HUP на fd при отключении, общий fd; сценарии «клиент пропал без disconnect» | Зависшие сессии | Тест с выключением BT на телефоне, уходом из зоны; supervision timeout |
-| E9 | Плагин battery в bluetoothd вызывает повторные запросы pairing у iOS при подключении к Linux-периферии (сообщение Ditto) [S] | UX без pairing | Проверить на 5.66 и 5.82; если подтвердится — найти обход без правки системной конфигурации или документировать |
-| E10 | Запрос параметров соединения (15 мс) и 2M PHY со стороны периферии без правки конфигурации BlueZ | Задержка на iOS | Проверить, что выбирает iOS по умолчанию; при необходимости — `hcitool`/mgmt-эквиваленты (без изменения `main.conf`) |
+| E1 | Real MTU, connection interval, echo latency and GATT notify/WNR throughput between the Pi (CYW43455) and current iPhones/Android phones; bluetoothd behavior under a notification burst | Responsiveness, credit window size | BleStream prototype on bluer: measure echo RTT, KB/s, bluetoothd memory during `cat` with and without credits |
+| E2 | iOS/Android ↔ BlueZ L2CAP CoC (without and with encryption), whether iOS initiates pairing on a security rejection, CoC in the background on iOS | Stage 4 (CoC) | `openL2CAPChannel` / `createInsecureL2capChannel` to a bluer `StreamListener` |
+| E3 | Several simultaneous LE connections on CYW43455; re-enabling advertising while a connection is active | Multi-client | `btmgmt info`, LE supported states, two phones |
+| E4 | sshlib over a BLE `Transport` on Android (JVM 17 target, desugaring); SwiftNIO SSH over a custom Channel on CoreBluetooth; handshake time (mlkem768x25519 vs curve25519) | Client timelines | Minimal PoCs on both platforms |
+| E5 | Unicode width mismatch (old libvterm table in termlib vs glibc on the Pi) | vim/htop corruption with emoji/CJK | Emoji/CJK test strings in vim/htop/tmux; if needed, update the table in termlib or switch to the Termux engine |
+| E6 | iOS background behavior with an open session (suspension, wake-up frequency), Android FGS on OEMs (Samsung/Xiaomi) | Background UX | Screen lock/app switching scenarios |
+| E7 | `sshd -i` via socket activation: termination on EOF, utmp/`who`, `pam_systemd`, behavior on OpenSSH 9.2 (Bookworm) and 10.x (Trixie) | Session correctness | Test on both OS releases |
+| E8 | BlueZ 5.66: no HUP on the fd on disconnect, shared fd; "client vanished without disconnect" scenarios | Hung sessions | Test with BT turned off on the phone, moving out of range; supervision timeout |
+| E9 | The battery plugin in bluetoothd causes repeated pairing requests from iOS when connecting to a Linux peripheral (Ditto report) [S] | UX without pairing | Check on 5.66 and 5.82; if confirmed — find a workaround without editing system configuration, or document it |
+| E10 | Peripheral-side connection parameter request (15 ms) and 2M PHY without editing BlueZ configuration | Latency on iOS | Check what iOS picks by default; if needed — `hcitool`/mgmt equivalents (without changing `main.conf`) |
 
-Прочие риски: termlib — пре-1.0 (0.3.x), API может меняться; termux terminal-emulator — лицензия Apache зафиксирована только в корневом `LICENSE.md`; App Store review — фоновый режим `bluetooth-central` нужно обосновать.
+Other risks: termlib is pre-1.0 (0.3.x), the API may change; termux terminal-emulator — the Apache license is stated only in the root `LICENSE.md`; App Store review — the `bluetooth-central` background mode has to be justified.
 
 ---
 
-## 9. Этапы MVP и развития
+## 9. MVP and development stages
 
-| Этап | Содержание | Результат |
+| Stage | Content | Result |
 |---|---|---|
-| 0. Эксперименты | E1, E4 (минимальные PoC), E7, E9; при наличии ресурса — E2 | Подтверждённые параметры кредитного окна и кадров, выбор CoC/не-CoC |
-| 1. Сервер + десктоп-клиент (MVP) | `ble-term-daemon` (Rust/bluer): GATT-сервис, реклама, BleStream с кредитами, один клиент, socket-activated `sshd -i`; десктопный `ble-term-connect` (Rust/bluer как central) для `ssh -o ProxyCommand="ble-term-connect <addr>" user@pi`; `.deb` | Полноценный терминал (vim/htop/tmux/nmtui) через BLE с ноутбука; проверка всего серверного контура |
-| 2. Android | Форк ConnectBot: `BleTransport` для sshlib, BLE-тип хоста (сканирование, CDM), FGS `connectedDevice`, пиннинг host key (QR/TOFU) | Android-клиент уровня ConnectBot |
-| 3. iOS | Приложение на SwiftTerm + SwiftNIO SSH + CoreBluetooth BleStream, accessory bar, список устройств, пиннинг ключа, Keychain/Secure Enclave | iOS-клиент |
-| 4. Развитие | L2CAP CoC с откатом на GATT; мульти-клиент (BlueZ ≥ 5.69 / CoC); опциональный BLE pairing с окном по кнопке; QR-провижининг; переподключение в фоне; (опционально) NUS-режим совместимости; вариант 7.1 при выборе | Полный продукт |
+| 0. Experiments | E1, E4 (minimal PoCs), E7, E9; if resources allow — E2 | Confirmed credit window and frame parameters, CoC/non-CoC choice |
+| 1. Server + desktop client (MVP) | `ble-term-daemon` (Rust/bluer): GATT service, advertising, BleStream with credits, single client, socket-activated `sshd -i`; desktop `ble-term-connect` (Rust/bluer as central) for `ssh -o ProxyCommand="ble-term-connect <addr>" user@pi`; `.deb` | Full terminal (vim/htop/tmux/nmtui) over BLE from a laptop; verification of the entire server pipeline |
+| 2. Android | ConnectBot fork: `BleTransport` for sshlib, BLE host type (scanning, CDM), FGS `connectedDevice`, host key pinning (QR/TOFU) | ConnectBot-level Android client |
+| 3. iOS | App on SwiftTerm + SwiftNIO SSH + CoreBluetooth BleStream, accessory bar, device list, key pinning, Keychain/Secure Enclave | iOS client |
+| 4. Further development | L2CAP CoC with fallback to GATT; multi-client (BlueZ ≥ 5.69 / CoC); optional BLE pairing with a button-opened window; QR provisioning; background reconnection; (optional) NUS compatibility mode; option 7.1 if chosen | Complete product |
 
-Вариант 7.1 (login/PAM без SSH), если оператор его выберет, меняет этапы 1–3 так: в этапе 1 добавляется root PTY-хелпер и кадр `RESIZE`; в этапах 2–3 termlib/SwiftTerm подключаются к BleStream напрямую (без SSH-библиотек), Android-клиент — собственное приложение на termlib или урезанный форк ConnectBot.
+Option 7.1 (login/PAM without SSH), if the operator chooses it, changes stages 1–3 as follows: stage 1 adds a root PTY helper and the `RESIZE` frame; in stages 2–3 termlib/SwiftTerm connect to BleStream directly (without SSH libraries), and the Android client is our own app on termlib or a stripped-down ConnectBot fork.
 
 ---
 
-## 10. Решения, требующие участия оператора
+## 10. Decisions requiring operator input
 
-1. Слой сессии: SSH поверх BLE (`sshd -i`) или собственный протокол с `login`/`agetty` (отступление от буквы ТЗ vs безопасность и повторное использование).
-2. Уровень безопасности BLE-канала: без обязательного pairing (защита на SSH) или обязательный LE SC pairing с окном по кнопке/passkey; способ доверия ключу хоста (QR / TOFU).
-3. Целевые версии ОС/BlueZ: поддерживать ли Bookworm (BlueZ 5.66) наравне с Trixie.
-4. Android-клиент: форк ConnectBot или собственное приложение на его библиотеках.
-5. Язык серверного демона: Rust (bluer) или Python.
-6. Политика завершения сессии при разрыве: SIGHUP «как ssh» (tmux выживает) или принудительное завершение logind-сессии.
-7. Нужен ли режим совместимости с NUS/сторонними UART-приложениями.
-8. Мульти-клиент: требуется ли в первой версии.
+1. Session layer: SSH over BLE (`sshd -i`) or our own protocol with `login`/`agetty` (deviation from the letter of the brief vs security and reuse).
+2. BLE channel security level: no mandatory pairing (protection via SSH) or mandatory LE SC pairing with a button-opened window/passkey; how the host key is trusted (QR / TOFU).
+3. Target OS/BlueZ versions: whether to support Bookworm (BlueZ 5.66) on par with Trixie.
+4. Android client: ConnectBot fork or our own app on its libraries.
+5. Server daemon language: Rust (bluer) or Python.
+6. Session termination policy on disconnect: SIGHUP "like ssh" (tmux survives) or forced termination of the logind session.
+7. Whether a compatibility mode with NUS/third-party UART apps is needed.
+8. Multi-client: whether it is required in the first version.
 
-Развёрнутые формулировки с рекомендациями — в сообщении оператору по завершении этапа 1.
+Detailed formulations with recommendations — in the message to the operator upon completion of stage 1.
