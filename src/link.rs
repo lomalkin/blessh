@@ -136,9 +136,13 @@ impl Link {
         if !self.closing {
             self.closing = true;
             self.outgoing.clear();
+            let mut end = message.len().min(self.max_frame - HEADER_LEN - 1);
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
             self.control.push_back(Frame::Close {
                 reason,
-                message: message.to_owned(),
+                message: message[..end].to_owned(),
             });
         }
     }
@@ -356,6 +360,17 @@ mod tests {
             }]
         );
         assert!(a.is_flushed());
+    }
+
+    #[test]
+    fn close_message_fits_frame() {
+        let mut a = Link::new(20, 100);
+        a.poll_transmit();
+        a.close(CloseReason::ProtocolError, &"é".repeat(40));
+        let pkt = a.poll_transmit().unwrap();
+        assert!(pkt.len() <= 20);
+        let (_, f) = Frame::decode(&pkt).unwrap();
+        assert!(matches!(f, Frame::Close { message, .. } if message == "é".repeat(8)));
     }
 
     #[test]
