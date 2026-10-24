@@ -16,6 +16,7 @@ Run on every change (CI does the same):
 | OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `ble-term-session` | `tests/e2e-loopback.sh` |
 | ARMv6 build: unit tests on an emulated ARM1176 | CI job `deb-armhf` |
 | Real BlueZ GATT path with two virtual controllers (needs root and the `hci_vhci` module) | `tests/e2e-vhci.sh` |
+| The same with the daemon under the D-Bus policy | `DAEMON_USER=nobody tests/e2e-vhci.sh` (see the script) |
 
 ## Setup
 
@@ -78,6 +79,7 @@ ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-b
 | S12 | Audit log | `journalctl -u ble-term` has session start and end lines with the device address and session id; the matching `ble-term-session@*` unit has the same id followed by the sshd login line |
 | S13 | Upgrade | Installing a newer package over the old one ends the active session (expected) and the server works afterwards |
 | S14 | Long session | A session idle or in use for an hour or more stays alive |
+| S15 | D-Bus policy | `sudo -u _bleterm dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0 org.bluez.Adapter1.StartDiscovery` fails with `AccessDenied`; S2, S3, S7 and S8 pass |
 
 ### Audit log (S12)
 

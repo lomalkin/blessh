@@ -4,6 +4,11 @@
 # connects from hci1 as an OpenSSH ProxyCommand. sshd is started per
 # connection by systemd-socket-activate and ble-term-session, mimicking
 # ble-term-session.socket.
+#
+# DAEMON_USER=<user> runs the daemon as that user (through sudo) to test the
+# D-Bus policy: install packaging/dbus.conf with _bleterm replaced by that
+# user into the bus configuration first. The test then also checks that the
+# user is denied BlueZ calls the daemon does not need.
 set -eu
 
 BIN=$(pwd)/target/debug
@@ -29,8 +34,17 @@ CFG
 systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/ble-term-session" -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
     > "$T/socket-activate.log" 2>&1 &
 SA=$!
-RUST_LOG=debug "$BIN/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
-    --host-key "$T/hostkey.pub" > "$T/daemon.log" 2>&1 &
+if [ -n "${DAEMON_USER:-}" ]; then
+    cp "$BIN/ble-term-daemon" "$T/"
+    sleep 1
+    chmod 666 "$T/session.sock"
+    sudo -u "$DAEMON_USER" env RUST_LOG=debug ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} \
+        "$T/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
+        --host-key "$T/hostkey.pub" > "$T/daemon.log" 2>&1 &
+else
+    RUST_LOG=debug "$BIN/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
+        --host-key "$T/hostkey.pub" > "$T/daemon.log" 2>&1 &
+fi
 D=$!
 trap 'kill $D $SA 2>/dev/null || true' EXIT
 sleep 3
@@ -105,5 +119,21 @@ for attempt in 1 2 3; do
 done
 [ "$out" = d ] || { echo "FAIL: server stuck after a reconnect raced its disconnect"; exit 1; }
 grep -E "rejecting|no longer connected|did not open" "$T/daemon.log" | sed 's/^/   daemon: /' || true
+
+if [ -n "${DAEMON_USER:-}" ]; then
+    echo "== D-Bus policy denies other BlueZ calls"
+    as_daemon() {
+        sudo -u "$DAEMON_USER" env ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} \
+            dbus-send --system --print-reply --dest=org.bluez "$@" 2>&1 || true
+    }
+    for call in "/org/bluez/hci0 org.bluez.Adapter1.StartDiscovery" \
+        "/org/bluez/hci0 org.freedesktop.DBus.Properties.Set string:org.bluez.Adapter1 string:Pairable variant:boolean:true" \
+        "/org/bluez/hci0 org.bluez.Adapter1.RemoveDevice objpath:/org/bluez/hci0/dev_00_AA_01_01_00_01"; do
+        # shellcheck disable=SC2086
+        as_daemon $call | grep -q AccessDenied || { echo "FAIL: allowed: $call"; exit 1; }
+    done
+    as_daemon /org/bluez/hci0 org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1 string:Powered \
+        | grep -q boolean || { echo "FAIL: Properties.Get denied"; exit 1; }
+fi
 
 echo "PASS"

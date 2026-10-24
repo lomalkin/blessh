@@ -75,6 +75,9 @@ if [ "$1" = configure ]; then
         ssh-keygen -q -t ed25519 -N '' -C "ble-term@$(hostname)" -f "$KEY"
     fi
     if [ -d /run/systemd/system ]; then
+        # The D-Bus policy names _bleterm; the bus ignores it if it read the
+        # file before systemd-sysusers created the user.
+        systemctl reload dbus.service 2>/dev/null || true
         systemctl daemon-reload
         systemctl enable ble-term-session.socket ble-term.service >/dev/null
         systemctl restart ble-term-session.socket

@@ -85,6 +85,7 @@ assets = [
     ["packaging/systemd/ble-term-session@.service", "lib/systemd/system/", "644"],
     ["packaging/sysusers.conf", "usr/lib/sysusers.d/ble-term.conf", "644"],
     ["packaging/tmpfiles.conf", "usr/lib/tmpfiles.d/ble-term.conf", "644"],
+    ["packaging/dbus.conf", "usr/share/dbus-1/system.d/ble-term.conf", "644"],
     ["README.md", "usr/share/doc/ble-term/", "644"],
     ["docs/PROTOCOL.md", "usr/share/doc/ble-term/", "644"],
     ["docs/TESTING.md", "usr/share/doc/ble-term/", "644"],

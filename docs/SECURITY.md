@@ -32,7 +32,7 @@ the phone.
 | Component | Runs as | Input from A1 | Controls |
 |---|---|---|---|
 | bluetoothd (BlueZ) | root | ATT/GATT, SMP, L2CAP | distribution package; not modified by ble-term |
-| `ble-term-daemon` | `_bleterm`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7) | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
+| `ble-term-daemon` | `_bleterm`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
 | `/run/ble-term/session.sock` | socket `0600 _bleterm` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
 | `ble-term-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
 | `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH; no root login, `MaxAuthTries 3`, `LoginGraceTime 60`, no forwarding of any kind, no compression |
@@ -47,7 +47,7 @@ The BLE SSH host key is `0600 root`; the daemon cannot read it.
 | S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
 | S-3 | Medium | Mitigated (0.1.3), rest in backlog | One client can occupy the only session slot |
 | S-4 | Medium | Mitigated (0.1.3), rest in backlog | Password guessing over BLE is not rate limited by source |
-| S-5 | Low | Open (hardening) | A compromised daemon controls all of BlueZ over D-Bus |
+| S-5 | Low | Fixed (0.1.3) | A compromised daemon controls all of BlueZ over D-Bus |
 | S-6 | Low | Fixed (0.1.3) | Unix socket forwarding was allowed |
 | S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
 | S-8 | Info | Accepted | BLE addresses in the audit log are weak identities |
@@ -119,11 +119,17 @@ how; a default group and a session rate limit are in backlog.md.
 The daemon talks to BlueZ as `_bleterm` (group `bluetooth`). BlueZ's D-Bus
 policy lets it call every BlueZ method: pair and connect devices, change
 adapter settings. On Raspberry Pi OS the default policy even grants this to
-every local user, so the gain for an attacker (A3) is small there, but on a
-distribution with a strict default policy it is real. Hardening option: a
-D-Bus policy for user `_bleterm` that only allows the interfaces the daemon
-uses (GattManager1, LEAdvertisingManager1, the Device1 properties and
-`Disconnect`, ObjectManager).
+every local user (Debian's BlueZ package does the same). The most serious
+use for an attacker who has taken over the daemon (A3) would be to pair
+and trust their own BLE keyboard and type on the server.
+
+Fixed: `/usr/share/dbus-1/system.d/ble-term.conf` denies `_bleterm` every
+call to BlueZ except the ones the daemon makes (`GetManagedObjects`,
+`Properties.Get`, registering and unregistering the GATT application and
+the advertisement, `Device1.Disconnect`); rules for a user override the
+default and group rules of BlueZ's policy. The list was taken from a D-Bus
+capture of the end-to-end test; `tests/e2e-vhci.sh` with `DAEMON_USER`
+runs the daemon under the policy and checks that other calls are denied.
 
 ### S-6 Unix socket forwarding
 
@@ -169,6 +175,7 @@ from the radio). Fixed with saturating arithmetic.
 | AddressSanitizer, LeakSanitizer | unit tests; loopback end-to-end test (300 KB each way, reordering, session socket) | clean |
 | Miri | library unit tests without BlueZ (`cargo miri test --lib --no-default-features`) | 12 of 13 tests clean; `sequence_wraps` (70 000 frames) takes hours under Miri and runs separately |
 | Kani | `link::proofs`: frame decoding, link invariants over packet sequences, credit and frame size limits | pending |
+| D-Bus policy | `tests/e2e-vhci.sh` with the daemon as a separate user under the policy; calls outside the list (`StartDiscovery`, setting `Pairable`, `RemoveDevice`) | passes; other calls denied, allowed without the policy |
 | `cargo audit` | main crate and fuzz crate lock files | no advisories |
 | `cargo deny` | licences, advisories, sources, yanked crates (`deny.toml`) | ok; one duplicate crate version warning |
 | Sandbox of the running daemon | target bench (Trixie) | as in the table above |

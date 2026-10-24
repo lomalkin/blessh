@@ -44,7 +44,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 sudo apt install ./ble-term_<version>_arm64.deb
 ```
 
-The package creates the `_bleterm` user, generates the BLE SSH host key,
+The package creates the `_bleterm` user (allowed only the BlueZ calls the
+daemon needs, through a D-Bus policy), generates the BLE SSH host key,
 enables and starts `ble-term-session.socket` and `ble-term.service`, and
 prints the host key fingerprint. Show it again with
 
