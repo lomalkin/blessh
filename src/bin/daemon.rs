@@ -57,7 +57,7 @@ struct Args {
 
 struct Pending {
     reader: Option<CharacteristicReader>,
-    writer: Option<CharacteristicWriter>,
+    writer: Option<Arc<CharacteristicWriter>>,
     since: Instant,
 }
 
@@ -160,6 +160,16 @@ async fn wait_powered(adapter: &Adapter) -> bluer::Result<()> {
     Ok(())
 }
 
+const HALF_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How a session ended, for the main loop.
+struct SessionEnd {
+    /// Disconnect the device after a grace period.
+    disconnect: bool,
+    /// Notification socket to keep for a reconnect over the same link.
+    notify: Option<Arc<CharacteristicWriter>>,
+}
+
 const ADV_INTERVAL: Duration = Duration::from_millis(400);
 
 async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<AdvertisementHandle> {
@@ -245,7 +255,12 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     tokio::pin!(rx_control, tx_control);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
-    let mut active: Option<(Address, JoinHandle<bool>)> = None;
+    let mut active: Option<(Address, JoinHandle<SessionEnd>)> = None;
+    // Notification socket of a session that ended cleanly while its link
+    // stays up. The client may reuse the link right away; it then rewrites
+    // the CCCD with the value it already has, and BlueZ < 5.69 does not call
+    // AcquireNotify again, so the next session needs this socket.
+    let mut parked: Option<Arc<CharacteristicWriter>> = None;
     // Device to disconnect once its session has ended, unless it reconnects first.
     let mut deferred_disconnect: Option<(Address, Instant)> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -272,6 +287,20 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             pending.since = Instant::now();
                         }
                         pending.reader = Some(req.accept()?);
+                        match parked.take() {
+                            Some(w) if w.device_address() == addr && pending.writer.is_none() => {
+                                if w.closed().now_or_never().is_none() {
+                                    debug!("{addr}: reusing the notification socket of its previous session");
+                                    pending.writer = Some(w);
+                                }
+                            }
+                            Some(w) if w.device_address() != addr => {
+                                // Its socket would keep BlueZ < 5.69 from handing
+                                // one to the new client; let the old link go.
+                                disconnect(&adapter, w.device_address());
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Some(_) => {}
@@ -297,7 +326,10 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         if pending.address().is_none() {
                             pending.since = Instant::now();
                         }
-                        pending.writer = Some(writer);
+                        if parked.as_ref().is_some_and(|w| w.device_address() == addr) {
+                            parked = None;
+                        }
+                        pending.writer = Some(Arc::new(writer));
                     }
                 }
                 Some(_) => {}
@@ -306,7 +338,9 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             done = async { (&mut active.as_mut().unwrap().1).await }, if active.is_some() => {
                 let (addr, _) = active.take().unwrap();
                 debug!("{addr}: session task finished");
-                if done.unwrap_or(false) {
+                let done = done.unwrap_or(SessionEnd { disconnect: false, notify: None });
+                parked = done.notify;
+                if done.disconnect {
                     // Let the client read the CLOSE frame and disconnect by
                     // itself. Phones keep the link for a while and may reuse it
                     // when the user reconnects right away; the delay keeps the
@@ -334,6 +368,9 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     if Instant::now() >= at {
                         deferred_disconnect = None;
                         if pending.address() != Some(addr) && active.as_ref().map(|(a, _)| *a) != Some(addr) {
+                            if parked.as_ref().is_some_and(|w| w.device_address() == addr) {
+                                parked = None;
+                            }
                             disconnect(&adapter, addr);
                         }
                     }
@@ -342,6 +379,15 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     if !is_connected(&adapter, addr).await {
                         info!("{addr}: disconnected before opening both characteristics");
                         pending = Pending::new();
+                    } else if (pending.reader.is_some() != pending.writer.is_some())
+                        && pending.since.elapsed() > HALF_OPEN_TIMEOUT
+                    {
+                        // One characteristic opened, the other not: with
+                        // BlueZ < 5.69 the second one may never come on this
+                        // link. A fresh connection fixes it.
+                        info!("{addr}: client opened only one characteristic, dropping the link");
+                        pending = Pending::new();
+                        disconnect(&adapter, addr);
                     } else if pending.since.elapsed() > handshake_timeout {
                         info!("{addr}: client did not open both characteristics in time");
                         pending = Pending::new();
@@ -408,7 +454,7 @@ async fn other_client(
     adapter: &Adapter,
     addr: Address,
     pending: &mut Pending,
-    active: &mut Option<(Address, JoinHandle<bool>)>,
+    active: &mut Option<(Address, JoinHandle<SessionEnd>)>,
 ) -> Option<Address> {
     if let Some(other) = pending.address().filter(|a| *a != addr) {
         if is_connected(adapter, other).await {
@@ -472,10 +518,9 @@ async fn run_session(
     adapter: Adapter,
     addr: Address,
     mut reader: CharacteristicReader,
-    writer: CharacteristicWriter,
+    writer: Arc<CharacteristicWriter>,
     args: Args,
-) -> bool {
-    let writer = Arc::new(writer);
+) -> SessionEnd {
     let mut tx = writer.clone();
     let mut link = Link::new(writer.mtu(), args.window);
     let started = Instant::now();
@@ -553,6 +598,10 @@ async fn run_session(
     }
     .await;
 
+    let clean = matches!(
+        result,
+        Ok(Some(Outcome::StreamEnded | Outcome::PeerClosed { .. }))
+    );
     let (end, lost) = match result {
         Ok(Some(Outcome::StreamEnded)) => ("server ended the session".to_owned(), false),
         Ok(Some(Outcome::PeerClosed { reason, message })) => (
@@ -579,5 +628,9 @@ async fn run_session(
         "{addr}: session {id}: ended after {}s, {received} bytes from client, {sent} bytes to client: {end}",
         started.elapsed().as_secs()
     );
-    !lost
+    drop(tx);
+    SessionEnd {
+        disconnect: !lost,
+        notify: clean.then_some(writer),
+    }
 }
