@@ -45,6 +45,10 @@ struct Args {
     /// Receive window granted to the client, in bytes.
     #[arg(long, default_value_t = 16384)]
     window: u32,
+    /// Re-register the advertisement after each session (for controllers
+    /// that do not resume advertising after a connection).
+    #[arg(long)]
+    readvertise: bool,
     /// SSH host public key whose fingerprint is logged at start-up.
     #[arg(long, default_value = "/etc/ble-term/ssh_host_ed25519_key.pub")]
     host_key: PathBuf,
@@ -183,7 +187,9 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     tokio::pin!(rx_control, tx_control);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
-    let mut active: Option<(Address, JoinHandle<()>)> = None;
+    let mut active: Option<(Address, JoinHandle<bool>)> = None;
+    // Device to disconnect once its session has ended, unless it reconnects first.
+    let mut deferred_disconnect: Option<(Address, Instant)> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
@@ -198,10 +204,11 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         info!("{addr}: rejecting, another client is connected");
                         req.reject(ReqError::NotPermitted);
                         disconnect(&adapter, addr).await;
-                    } else if active.is_some() {
-                        warn!("{addr}: unexpected write re-acquire during a session");
-                        req.reject(ReqError::NotPermitted);
                     } else {
+                        if let Some((_, task)) = active.take() {
+                            info!("{addr}: client reopened the stream, replacing its previous session");
+                            task.abort();
+                        }
                         debug!("{addr}: write acquired, MTU {}", req.mtu());
                         if pending.address().is_none() {
                             pending.since = Instant::now();
@@ -215,7 +222,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ev = tx_control.next() => match ev {
                 Some(CharacteristicControlEvent::Notify(writer)) => {
                     let addr = writer.device_address();
-                    if active.is_some() || pending.address().is_some_and(|a| a != addr) {
+                    if active.as_ref().is_some_and(|(a, _)| *a != addr) || pending.address().is_some_and(|a| a != addr) {
                         // Only BlueZ >= 5.69 hands out per-device notify sockets,
                         // so this cannot reach the active client.
                         info!("{addr}: rejecting, another client is connected");
@@ -224,6 +231,10 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         drop(writer);
                         disconnect(&adapter, addr).await;
                     } else {
+                        if let Some((_, task)) = active.take() {
+                            info!("{addr}: client resubscribed, replacing its previous session");
+                            task.abort();
+                        }
                         debug!("{addr}: notifications enabled, MTU {}", writer.mtu());
                         if pending.address().is_none() {
                             pending.since = Instant::now();
@@ -234,14 +245,21 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Some(_) => {}
                 None => return Err("GATT application was unregistered".into()),
             },
-            _ = async { (&mut active.as_mut().unwrap().1).await }, if active.is_some() => {
+            done = async { (&mut active.as_mut().unwrap().1).await }, if active.is_some() => {
                 let (addr, _) = active.take().unwrap();
                 debug!("{addr}: session task finished");
-                // Some controllers do not resume advertising after a connection.
-                adv = None;
-                match advertise(&adapter, &name).await {
-                    Ok(h) => adv = Some(h),
-                    Err(e) => error!("re-registering advertisement failed: {e}"),
+                if done.unwrap_or(false) {
+                    // Let the client read the CLOSE frame and disconnect by itself.
+                    deferred_disconnect = Some((addr, Instant::now() + Duration::from_secs(2)));
+                }
+                // The kernel resumes advertising on disconnect; re-registering
+                // here raced with reconnecting clients in tests, so it is opt-in.
+                if args.readvertise {
+                    adv = None;
+                    match advertise(&adapter, &name).await {
+                        Ok(h) => adv = Some(h),
+                        Err(e) => error!("re-registering advertisement failed: {e}"),
+                    }
                 }
             }
             _ = tick.tick() => {
@@ -249,6 +267,14 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     match advertise(&adapter, &name).await {
                         Ok(h) => adv = Some(h),
                         Err(e) => debug!("advertising retry failed: {e}"),
+                    }
+                }
+                if let Some((addr, at)) = deferred_disconnect {
+                    if Instant::now() >= at {
+                        deferred_disconnect = None;
+                        if pending.address() != Some(addr) && active.as_ref().map(|(a, _)| *a) != Some(addr) {
+                            disconnect(&adapter, addr).await;
+                        }
                     }
                 }
                 if let Some(addr) = pending.address() {
@@ -318,13 +344,14 @@ async fn link_gone(adapter: Adapter, addr: Address, writer: Arc<CharacteristicWr
     }
 }
 
+/// Runs one session; returns true if the device should be disconnected.
 async fn run_session(
     adapter: Adapter,
     addr: Address,
     mut reader: CharacteristicReader,
     writer: CharacteristicWriter,
     args: Args,
-) {
+) -> bool {
     let writer = Arc::new(writer);
     let mut tx = writer.clone();
     let mut link = Link::new(writer.mtu(), args.window);
@@ -397,12 +424,5 @@ async fn run_session(
             true
         }
     };
-    drop(reader);
-    drop(tx);
-    drop(writer);
-    if !lost {
-        // Give the client a moment to read the CLOSE frame.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        disconnect(&adapter, addr).await;
-    }
+    !lost
 }

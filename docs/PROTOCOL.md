@@ -18,8 +18,9 @@ authentication come from SSH (host key pinning on the client, PAM / public
 keys on the server).
 
 Every ATT write to RX and every notification on TX carries exactly one frame.
-A frame never exceeds the ATT payload limit (ATT_MTU − 3; the server keeps a
-few bytes of margin, see `max_frame` below).
+A frame never exceeds min(ATT_MTU − 3, 500) bytes. The 500 byte cap leaves
+room below the 512 byte attribute limit: BlueZ acting as GATT client was seen
+to drop larger writes without response when EATT is enabled.
 
 ## Frames
 
@@ -86,7 +87,7 @@ already reliable, so no retransmission is needed.
 * Use write without response for RX and keep only the OS-permitted number of
   writes outstanding (Android: wait for `onCharacteristicWrite`; iOS: wait for
   `canSendWriteWithoutResponse`).
-* Frame size = negotiated ATT MTU − 3 (Android: request MTU 517 first).
+* Frame size = min(negotiated ATT MTU − 3, 500) (Android: request MTU 517 first).
 * Pass DATA bytes to the SSH layer unchanged; never decode text per packet.
 
 ## Test vectors

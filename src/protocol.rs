@@ -18,8 +18,10 @@ pub const MAGIC: [u8; 4] = *b"BLTM";
 pub const HEADER_LEN: usize = 3;
 /// Smallest usable frame size (ATT MTU 23 minus the 3 byte ATT header).
 pub const MIN_FRAME: usize = 20;
-/// Largest value a single ATT write or notification may carry.
-pub const MAX_FRAME: usize = 512;
+/// Upper bound for a frame. Below the 512 byte ATT value limit because
+/// BlueZ as GATT client drops writes without response above ~510 bytes
+/// (seen with BlueZ 5.66 and EATT enabled).
+pub const MAX_FRAME: usize = 500;
 
 pub const T_HELLO: u8 = 0x01;
 pub const T_DATA: u8 = 0x02;

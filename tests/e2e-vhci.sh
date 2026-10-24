@@ -6,6 +6,7 @@
 set -eu
 
 BIN=$(pwd)/target/debug
+SERVER=${SERVER:-00:AA:01:00:00:00}
 T=/tmp/ble-term-vhci
 rm -rf "${T:?}"
 mkdir -p "$T"
@@ -33,10 +34,20 @@ D=$!
 trap 'kill $D $SA 2>/dev/null || true' EXIT
 sleep 3
 
+# Successive clients share the one LE link from hci1: let the previous
+# ble-term-connect finish (it disconnects on exit) before starting the next.
+wait_link_down() {
+    for _ in $(seq 40); do
+        pgrep -x ble-term-connec > /dev/null || return 0
+        sleep 0.25
+    done
+}
+
 run() {
+    wait_link_down
     timeout 120 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" -o HostKeyAlias=vhci-server \
-        -o ProxyCommand="RUST_LOG=info $BIN/ble-term-connect --adapter hci1 vhci-server 2>>$T/connect.log" \
+        -o ProxyCommand="env RUST_LOG=info $BIN/ble-term-connect --adapter hci1 $SERVER 2>>$T/connect.log" \
         "$(id -un)@vhci-server" "$@"
 }
 

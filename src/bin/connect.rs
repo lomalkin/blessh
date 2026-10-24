@@ -3,10 +3,10 @@
 //!
 //!   ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' user@pi
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use ble_term::{
-    bridge::{self, Outcome, PacketRx},
+    bridge::{self, Outcome, PacketRx, PacketTx},
     link::Link,
     logging,
     protocol::{CloseReason, RX_UUID, SERVICE_UUID, TX_UUID},
@@ -39,6 +39,9 @@ struct Args {
     /// Receive window granted to the server, in bytes.
     #[arg(long, default_value_t = 32768)]
     window: u32,
+    /// Upper limit for frames written to the server (default: from the ATT MTU).
+    #[arg(long)]
+    max_frame: Option<usize>,
 }
 
 struct Rx(bluer::gatt::CharacteristicReader);
@@ -87,25 +90,53 @@ async fn find(adapter: &Adapter, args: &Args) -> bluer::Result<Option<Device>> {
     tokio::pin!(events);
     let deadline = tokio::time::sleep(Duration::from_secs(args.scan_timeout));
     tokio::pin!(deadline);
+    // Advertised UUIDs and names can arrive after DeviceAdded, so devices
+    // are re-checked until they match or the scan ends.
+    let mut candidates: Vec<Address> = Vec::new();
+    let mut listed: HashSet<Address> = HashSet::new();
+    let mut recheck = tokio::time::interval(Duration::from_millis(500));
     loop {
         tokio::select! {
             _ = &mut deadline => return Ok(None),
             ev = events.next() => {
-                let Some(AdapterEvent::DeviceAdded(addr)) = ev else { continue };
-                let dev = adapter.device(addr)?;
-                if !dev.uuids().await?.unwrap_or_default().contains(&SERVICE_UUID) {
-                    continue;
+                if let Some(AdapterEvent::DeviceAdded(addr)) = ev {
+                    if !candidates.contains(&addr) {
+                        candidates.push(addr);
+                    }
                 }
-                let name = dev.name().await?.unwrap_or_default();
-                if args.scan {
-                    println!("{addr}  {name}  rssi={}", dev.rssi().await?.unwrap_or_default());
-                    continue;
+            }
+            _ = recheck.tick() => {}
+        }
+        for addr in candidates.clone() {
+            let dev = adapter.device(addr)?;
+            let target_addr = args
+                .target
+                .as_deref()
+                .is_some_and(|t| t.eq_ignore_ascii_case(&addr.to_string()));
+            let advertises = dev
+                .uuids()
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .contains(&SERVICE_UUID);
+            if !advertises && !target_addr {
+                continue;
+            }
+            let name = dev.name().await.ok().flatten().unwrap_or_default();
+            if args.scan {
+                if listed.insert(addr) {
+                    println!(
+                        "{addr}  {name}  rssi={}",
+                        dev.rssi().await.ok().flatten().unwrap_or_default()
+                    );
                 }
-                match args.target.as_deref() {
-                    None => return Ok(Some(dev)),
-                    Some(t) if t.eq_ignore_ascii_case(&addr.to_string()) || t == name => return Ok(Some(dev)),
-                    _ => {}
-                }
+                continue;
+            }
+            match args.target.as_deref() {
+                None => return Ok(Some(dev)),
+                Some(t) if target_addr || t == name => return Ok(Some(dev)),
+                _ => {}
             }
         }
     }
@@ -171,20 +202,32 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         notify.mtu()
     );
 
-    let mut link = Link::new(writer.mtu(), args.window);
+    let mut link = Link::new(
+        args.max_frame.map_or(writer.mtu(), |m| m.min(writer.mtu())),
+        args.window,
+    );
     let mut rx = Rx(notify);
     let mut tx = Arc::new(writer);
     let initial = bridge::handshake(&mut link, &mut rx, &mut tx, Duration::from_secs(10)).await?;
     let stdio = bridge::stdio()?;
-    let outcome = bridge::run(
-        &mut link,
-        &mut rx,
-        &mut tx,
-        stdio,
-        initial,
-        std::future::pending(),
-    )
-    .await?;
+    // ssh terminates its ProxyCommand with SIGHUP/SIGTERM when it is done.
+    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let stop = async move {
+        tokio::select! {
+            _ = hup.recv() => {}
+            _ = term.recv() => {}
+        }
+    };
+    let outcome = bridge::run(&mut link, &mut rx, &mut tx, stdio, initial, stop).await?;
+    if matches!(outcome, Outcome::Cancelled) {
+        link.close(CloseReason::Normal, "client exiting");
+        while let Some(p) = link.poll_transmit() {
+            if tx.send(&p).await.is_err() {
+                break;
+            }
+        }
+    }
     let code = match outcome {
         Outcome::StreamEnded | Outcome::Cancelled => 0,
         Outcome::PeerClosed {
