@@ -1,0 +1,52 @@
+[package]
+name = "ble-term-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+ble-term = { path = "../..", default-features = false }
+tokio = { version = "1", features = ["rt", "time", "io-util", "sync", "macros", "test-util"] }
+
+[[bin]]
+name = "frame_decode"
+path = "fuzz_targets/frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link"
+path = "fuzz_targets/link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link_pair"
+path = "fuzz_targets/link_pair.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "preamble"
+path = "fuzz_targets/preamble.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bridge"
+path = "fuzz_targets/bridge.rs"
+test = false
+doc = false
+bench = false
+
+# Not part of the main crate's workspace.
+[workspace]

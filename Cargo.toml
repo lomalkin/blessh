@@ -14,10 +14,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "ble-term-daemon"
 path = "src/bin/daemon.rs"
+required-features = ["bluez"]
 
 [[bin]]
 name = "ble-term-connect"
 path = "src/bin/connect.rs"
+required-features = ["bluez"]
 
 [[bin]]
 name = "ble-term-session"
@@ -27,11 +29,17 @@ path = "src/bin/session.rs"
 name = "ble-term-loopback"
 path = "src/bin/loopback.rs"
 
+[features]
+default = ["bluez"]
+# BlueZ (D-Bus) support: the daemon and the desktop client. The protocol code
+# builds without it, which keeps the fuzz targets light.
+bluez = ["dep:bluer", "dep:libdbus-sys"]
+
 [dependencies]
-bluer = { version = "0.17.4", features = ["bluetoothd"] }
+bluer = { version = "0.17.4", features = ["bluetoothd"], optional = true }
 # Build libdbus from source so the binaries need neither libdbus-1-dev at build
 # time nor a matching libdbus at run time (simplifies cross-compilation).
-libdbus-sys = { version = "0.2.7", features = ["vendored"] }
+libdbus-sys = { version = "0.2.7", features = ["vendored"], optional = true }
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "io-std", "time", "signal", "process", "sync", "fs"] }
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }

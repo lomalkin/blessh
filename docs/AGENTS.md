@@ -9,6 +9,14 @@ and error messages, documentation, commit messages and file names. Notes,
 quotes or research in another language are translated before they are
 committed.
 
+## No local details
+
+Host names, addresses, user names, passwords and other details of the
+machines used for testing are not committed (also not in commit messages).
+Tools that need them read a local config: the repository has an
+`*.example` file next to it, the real one is listed in `.gitignore`.
+Documentation describes test machines by hardware and OS only.
+
 ## Commits
 
 Commit messages describe the change. They carry no tool or agent

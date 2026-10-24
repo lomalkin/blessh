@@ -22,12 +22,14 @@ pub trait PacketTx {
     async fn send(&mut self, pkt: &[u8]) -> io::Result<()>;
 }
 
+#[cfg(feature = "bluez")]
 impl PacketRx for bluer::gatt::CharacteristicReader {
     async fn recv(&mut self) -> io::Result<Vec<u8>> {
         bluer::gatt::CharacteristicReader::recv(self).await
     }
 }
 
+#[cfg(feature = "bluez")]
 impl PacketTx for std::sync::Arc<bluer::gatt::CharacteristicWriter> {
     async fn send(&mut self, pkt: &[u8]) -> io::Result<()> {
         bluer::gatt::CharacteristicWriter::send(self, pkt).await

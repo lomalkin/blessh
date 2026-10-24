@@ -128,6 +128,25 @@ impl Link {
         self.control.is_empty() && (self.outgoing.is_empty() || self.closing)
     }
 
+    /// Panics if internal bookkeeping is inconsistent. For fuzzing and
+    /// property tests; cheap enough to call after every operation.
+    #[doc(hidden)]
+    pub fn check_invariants(&self) {
+        assert!(self.reorder.len() <= REORDER_LIMIT as usize, "reorder buffer too large");
+        for seq in self.reorder.keys() {
+            let ahead = seq.wrapping_sub(self.rx_seq);
+            assert!(ahead > 0 && ahead <= REORDER_LIMIT, "reorder entry outside the window");
+        }
+        assert!(
+            self.recv_allowance + self.consumed as u64 <= self.recv_window as u64,
+            "granted more than the receive window"
+        );
+        assert!((MIN_FRAME..=MAX_FRAME).contains(&self.max_frame));
+        if self.closing {
+            assert!(self.outgoing.is_empty(), "data queued after CLOSE");
+        }
+    }
+
     /// Stream bytes (queued for sending, received) so far.
     pub fn stats(&self) -> (u64, u64) {
         (self.bytes_sent, self.bytes_received)
