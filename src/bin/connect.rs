@@ -42,6 +42,10 @@ struct Args {
     /// Upper limit for frames written to the server (default: from the ATT MTU).
     #[arg(long)]
     max_frame: Option<usize>,
+    /// Leave the BLE link up on exit, like a phone that keeps it for a few
+    /// seconds (for tests).
+    #[arg(long, hide = true)]
+    keep_link: bool,
 }
 
 struct Rx(bluer::gatt::CharacteristicReader);
@@ -164,6 +168,7 @@ async fn characteristics(dev: &Device) -> bluer::Result<Option<(Characteristic, 
 }
 
 async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
+    let keep_link = args.keep_link;
     let session = bluer::Session::new().await?;
     let adapter = match &args.adapter {
         Some(n) => session.adapter(n)?,
@@ -244,6 +249,8 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             3
         }
     };
-    let _ = dev.disconnect().await;
+    if !keep_link {
+        let _ = dev.disconnect().await;
+    }
     Ok(code)
 }

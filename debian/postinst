@@ -3,6 +3,24 @@ set -e
 
 KEY=/etc/ble-term/ssh_host_ed25519_key
 
+# BlueZ before 5.67 enables EATT by default. bluetoothd then opens an EATT
+# channel to the phone, the phone refuses it without encryption, and
+# bluetoothd asks the phone to pair; whatever the user answers, the
+# connection usually drops. Later BlueZ versions default to Channels = 1.
+# The package does not edit bluez's configuration; it only explains.
+eatt_hint() {
+    v=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null) || return 0
+    dpkg --compare-versions "$v" lt 5.67 || return 0
+    if grep -Eq '^[[:space:]]*Channels[[:space:]]*=[[:space:]]*1[[:space:]]*$' /etc/bluetooth/main.conf 2>/dev/null; then
+        return 0
+    fi
+    echo "ble-term: BlueZ $v enables EATT, which makes phones show a pairing request and drop"
+    echo "  the connection. Disable it (the default since BlueZ 5.67) by adding"
+    echo "      Channels = 1"
+    echo "  to the [GATT] section of /etc/bluetooth/main.conf, then run"
+    echo "      sudo systemctl restart bluetooth"
+}
+
 # Explains why Bluetooth is unusable, if it is. The package does not change
 # the rfkill state itself: a block is often deliberate.
 bluetooth_hint() {
@@ -44,6 +62,7 @@ if [ "$1" = configure ]; then
     echo "ble-term: BLE SSH host key fingerprint:"
     ssh-keygen -l -f "$KEY.pub" | sed 's/^/  /'
     bluetooth_hint
+    eatt_hint
 fi
 
 exit 0

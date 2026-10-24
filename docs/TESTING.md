@@ -34,6 +34,10 @@ systemctl status ble-term.service ble-term-session.socket
 journalctl -u ble-term -n 20     # ends with "ready (BlueZ GATT application and advertisement registered)"
 ```
 
+On Bookworm (BlueZ 5.66) apply the `Channels = 1` setting the installer
+asks for (see README, "Bookworm"); without it the phone shows a pairing
+request and the connection drops.
+
 The daemon advertises the host name. To change it, set
 `BLE_TERM_ARGS="--name my-pi"` in `/etc/default/ble-term` and run
 `sudo systemctl restart ble-term`.

@@ -160,11 +160,17 @@ async fn wait_powered(adapter: &Adapter) -> bluer::Result<()> {
     Ok(())
 }
 
+const ADV_INTERVAL: Duration = Duration::from_millis(400);
+
 async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<AdvertisementHandle> {
     let adv = Advertisement {
         service_uuids: [SERVICE_UUID].into_iter().collect(),
         discoverable: Some(true),
         local_name: Some(name.to_owned()),
+        // BlueZ defaults to 1.28 s; a phone can only start connecting after it
+        // hears an advertisement, so a shorter interval makes connects faster.
+        min_interval: Some(ADV_INTERVAL),
+        max_interval: Some(ADV_INTERVAL),
         ..Default::default()
     };
     adapter.advertise(adv).await
@@ -252,10 +258,10 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ev = rx_control.next() => match ev {
                 Some(CharacteristicControlEvent::Write(req)) => {
                     let addr = req.device_address();
-                    if active.as_ref().is_some_and(|(a, _)| *a != addr) || pending.address().is_some_and(|a| a != addr) {
-                        info!("{addr}: rejecting, another client is connected");
+                    if let Some(other) = other_client(&adapter, addr, &mut pending, &mut active).await {
+                        info!("{addr}: rejecting, another client ({other}) is connected");
                         req.reject(ReqError::NotPermitted);
-                        disconnect(&adapter, addr).await;
+                        disconnect(&adapter, addr);
                     } else {
                         if let Some((_, task)) = active.take() {
                             info!("{addr}: client reopened the stream, replacing its previous session");
@@ -274,14 +280,14 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ev = tx_control.next() => match ev {
                 Some(CharacteristicControlEvent::Notify(writer)) => {
                     let addr = writer.device_address();
-                    if active.as_ref().is_some_and(|(a, _)| *a != addr) || pending.address().is_some_and(|a| a != addr) {
+                    if let Some(other) = other_client(&adapter, addr, &mut pending, &mut active).await {
                         // Only BlueZ >= 5.69 hands out per-device notify sockets,
                         // so this cannot reach the active client.
-                        info!("{addr}: rejecting, another client is connected");
+                        info!("{addr}: rejecting, another client ({other}) is connected");
                         let busy = Frame::Close { reason: CloseReason::Busy, message: "another client is connected".into() };
                         let _ = writer.try_send(&busy.encode(0));
                         drop(writer);
-                        disconnect(&adapter, addr).await;
+                        disconnect(&adapter, addr);
                     } else {
                         if let Some((_, task)) = active.take() {
                             info!("{addr}: client resubscribed, replacing its previous session");
@@ -301,8 +307,11 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 let (addr, _) = active.take().unwrap();
                 debug!("{addr}: session task finished");
                 if done.unwrap_or(false) {
-                    // Let the client read the CLOSE frame and disconnect by itself.
-                    deferred_disconnect = Some((addr, Instant::now() + Duration::from_secs(2)));
+                    // Let the client read the CLOSE frame and disconnect by
+                    // itself. Phones keep the link for a while and may reuse it
+                    // when the user reconnects right away; the delay keeps the
+                    // window in which that races with our disconnect small.
+                    deferred_disconnect = Some((addr, Instant::now() + Duration::from_secs(10)));
                 }
                 // The kernel resumes advertising on disconnect; re-registering
                 // here raced with reconnecting clients in tests, so it is opt-in.
@@ -325,15 +334,18 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     if Instant::now() >= at {
                         deferred_disconnect = None;
                         if pending.address() != Some(addr) && active.as_ref().map(|(a, _)| *a) != Some(addr) {
-                            disconnect(&adapter, addr).await;
+                            disconnect(&adapter, addr);
                         }
                     }
                 }
                 if let Some(addr) = pending.address() {
-                    if pending.since.elapsed() > handshake_timeout {
+                    if !is_connected(&adapter, addr).await {
+                        info!("{addr}: disconnected before opening both characteristics");
+                        pending = Pending::new();
+                    } else if pending.since.elapsed() > handshake_timeout {
                         info!("{addr}: client did not open both characteristics in time");
                         pending = Pending::new();
-                        disconnect(&adapter, addr).await;
+                        disconnect(&adapter, addr);
                     }
                 }
             }
@@ -367,12 +379,54 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn disconnect(adapter: &Adapter, addr: Address) {
-    if let Ok(dev) = adapter.device(addr) {
-        if let Err(e) = dev.disconnect().await {
-            debug!("{addr}: disconnect failed: {e}");
+/// Disconnects a device in the background. Device1.Disconnect can take
+/// seconds; awaiting it in the main loop would delay the replies to
+/// AcquireWrite/AcquireNotify of a reconnecting client until its link is gone.
+fn disconnect(adapter: &Adapter, addr: Address) {
+    let adapter = adapter.clone();
+    tokio::spawn(async move {
+        if let Ok(dev) = adapter.device(addr) {
+            if let Err(e) = dev.disconnect().await {
+                debug!("{addr}: disconnect failed: {e}");
+            }
+        }
+    });
+}
+
+async fn is_connected(adapter: &Adapter, addr: Address) -> bool {
+    match adapter.device(addr) {
+        Ok(dev) => dev.is_connected().await.unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Returns the other device that holds the server, if any. State left behind
+/// by a device that is no longer connected (a half-opened stream, a session
+/// whose link loss has not been noticed yet) is dropped instead of blocking
+/// the new client.
+async fn other_client(
+    adapter: &Adapter,
+    addr: Address,
+    pending: &mut Pending,
+    active: &mut Option<(Address, JoinHandle<bool>)>,
+) -> Option<Address> {
+    if let Some(other) = pending.address().filter(|a| *a != addr) {
+        if is_connected(adapter, other).await {
+            return Some(other);
+        }
+        info!("{other}: no longer connected, dropping its half-opened stream");
+        *pending = Pending::new();
+    }
+    if let Some(other) = active.as_ref().map(|(a, _)| *a).filter(|a| *a != addr) {
+        if is_connected(adapter, other).await {
+            return Some(other);
+        }
+        info!("{other}: no longer connected, ending its session");
+        if let Some((_, task)) = active.take() {
+            task.abort();
         }
     }
+    None
 }
 
 /// Resolves when the device is no longer connected or the notify socket closes.
@@ -431,6 +485,32 @@ async fn run_session(
         address_type: address_type(&adapter, addr).await.into(),
     };
     let id = preamble.id.clone();
+    // Logs the end of the session if the task is aborted (client replaced by
+    // a reconnect, or its link found dead) instead of returning.
+    struct AbortLog {
+        addr: Address,
+        id: String,
+        started: Instant,
+        armed: bool,
+    }
+    impl Drop for AbortLog {
+        fn drop(&mut self) {
+            if self.armed {
+                info!(
+                    "{}: session {}: ended after {}s: replaced or link lost",
+                    self.addr,
+                    self.id,
+                    self.started.elapsed().as_secs()
+                );
+            }
+        }
+    }
+    let mut abort_log = AbortLog {
+        addr,
+        id: id.clone(),
+        started,
+        armed: true,
+    };
     info!(
         "{addr}: session {id}: client connected ({} address, notify MTU {}, write MTU {})",
         preamble.address_type,
@@ -493,6 +573,7 @@ async fn run_session(
         Err(BridgeError::HandshakeTimeout) => ("handshake timed out".into(), false),
         Err(BridgeError::Io(e)) => (format!("link error: {e}"), true),
     };
+    abort_log.armed = false;
     let (sent, received) = link.stats();
     info!(
         "{addr}: session {id}: ended after {}s, {received} bytes from client, {sent} bytes to client: {end}",

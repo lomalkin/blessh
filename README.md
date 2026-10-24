@@ -73,6 +73,20 @@ must be on; the daemon waits for it and logs what to do if it is blocked by
 rfkill (`sudo rfkill unblock bluetooth`) or powered off
 (`bluetoothctl power on`). The package does not change the rfkill state.
 
+## Bookworm (BlueZ 5.66): pairing request and dropped connections
+
+BlueZ before 5.67 enables EATT by default. When a phone connects,
+bluetoothd opens an extra EATT channel to it; the phone refuses it without
+encryption and bluetoothd asks the phone to pair. ble-term does not use
+pairing, so whatever the user answers (cancel, pair or ignore), the
+connection drops within seconds. Later BlueZ versions disable EATT by
+default (upstream commit "main: Disable EATT by default", 5.67).
+
+Fix: add `Channels = 1` to the `[GATT]` section of
+`/etc/bluetooth/main.conf` and run `sudo systemctl restart bluetooth`. This
+is the default of every later BlueZ release. The package does not change
+bluez's configuration; on BlueZ < 5.67 the installer prints this hint.
+
 ## Desktop client
 
 `ble-term-connect` (in the same package, or `cargo build --release`) is an
