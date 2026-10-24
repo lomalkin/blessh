@@ -1,4 +1,4 @@
-> Research working notes (2026-10-24), appendix to `../ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
+> Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
 # E. Security: BLE terminal (headless BlueZ peripheral, Android/iOS clients, agetty/login/PAM)
 
