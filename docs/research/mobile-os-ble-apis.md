@@ -1,6 +1,6 @@
 > Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
-# D. Mobile OS BLE API constraints (iOS CoreBluetooth / Android) for a BLE terminal
+# Mobile OS BLE API constraints (iOS CoreBluetooth / Android) for a BLE terminal
 
 Scope: BLE terminal with a Linux/BlueZ peripheral (Raspberry Pi) and phone apps as central. Research date: 2026-10-24.
 Labels: **[V]** = verified from a primary source (Apple doc/ADG/WWDC transcript, Android doc, AOSP source). **[S]** = secondary source (vendor blog, forum, measurement). **[H]** = hypothesis or inference to validate on hardware.

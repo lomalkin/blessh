@@ -1,6 +1,6 @@
 > Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
-# C. Linux server side: BLE terminal on BlueZ (research notes)
+# Linux server side: BLE terminal on BlueZ (research notes)
 
 Scope: Linux/BlueZ peripheral that exposes an interactive login terminal to native Android/iOS
 clients over BLE (GATT and/or L2CAP CoC). Research only, no implementation.

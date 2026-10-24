@@ -3,7 +3,7 @@
 Reference for whoever writes a BleStream client beyond the Android app and
 the Linux `ble-term-connect`. No such client is planned yet (backlog.md).
 Sources, estimates and the full comparison are in the working note
-[F-client-platforms.md](F-client-platforms.md) (2026-10-24); items marked
+[client-platforms-notes.md](client-platforms-notes.md) (2026-10-24); items marked
 there as unverified need a hardware test before they are relied on.
 
 ## What every client must do

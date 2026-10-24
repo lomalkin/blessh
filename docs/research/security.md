@@ -1,6 +1,6 @@
 > Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
-# E. Security: BLE terminal (headless BlueZ peripheral, Android/iOS clients, agetty/login/PAM)
+# Security: BLE terminal (headless BlueZ peripheral, Android/iOS clients, agetty/login/PAM)
 
 Status labels: **[V]** verified by reading source or a primary or near-primary page (citation given). **[H]** hypothesis or recollection that was not re-verified in this session.
 

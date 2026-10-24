@@ -1,6 +1,6 @@
 > Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
-# A. Mobile BLE UART / BLE terminal apps — survey (2026-10-24)
+# Mobile BLE UART / BLE terminal apps — survey (2026-10-24)
 
 Scope: open-source Android/iOS apps and libraries that move a byte stream over BLE (mostly Nordic UART Service, NUS), and real "shell over BLE" projects. The question: what can a Termux-grade terminal client over BLE to a Linux/BlueZ server reuse?
 

@@ -1,6 +1,6 @@
 > Research working notes (2026-10-24), appendix to `ble-terminal-research.md`. Paths like `scratchpad/repos/...` refer to temporary clones; line numbers match the SHAs given.
 
-# B. Terminal emulator engines and mobile clients you can reuse with a BLE byte-stream transport
+# Terminal emulator engines and mobile clients you can reuse with a BLE byte-stream transport
 
 Research date: 2026-10-24. Repos were shallow-cloned to `scratchpad/repos/<name>`. Line numbers refer to the SHAs below.
 Labels: **[V]** = verified (source read or `gh api`); **[H]** = hypothesis or estimate.

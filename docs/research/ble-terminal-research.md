@@ -6,11 +6,11 @@ Working notes with full quotations, commit SHAs and line numbers are moved to th
 
 | Appendix | Topic |
 |---|---|
-| [research/A-mobile-ble-uart-apps.md](A-mobile-ble-uart-apps.md) | Mobile BLE UART/terminal apps, "shell over BLE" projects |
-| [research/B-terminal-engines.md](B-terminal-engines.md) | Terminal engines and mobile terminal/SSH clients |
-| [research/C-linux-server.md](C-linux-server.md) | BlueZ D-Bus, L2CAP CoC, libraries, PTY/login/PAM, privileges, packaging |
-| [research/D-mobile-os-ble-apis.md](D-mobile-os-ble-apis.md) | CoreBluetooth and Android BLE limitations at the system API level |
-| [research/E-security.md](E-security.md) | Pairing/bonding on a headless device, threat model, SSH/Noise over BLE |
+| [research/mobile-ble-uart-apps.md](mobile-ble-uart-apps.md) | Mobile BLE UART/terminal apps, "shell over BLE" projects |
+| [research/terminal-engines.md](terminal-engines.md) | Terminal engines and mobile terminal/SSH clients |
+| [research/linux-server.md](linux-server.md) | BlueZ D-Bus, L2CAP CoC, libraries, PTY/login/PAM, privileges, packaging |
+| [research/mobile-os-ble-apis.md](mobile-os-ble-apis.md) | CoreBluetooth and Android BLE limitations at the system API level |
+| [research/security.md](security.md) | Pairing/bonding on a headless device, threat model, SSH/Noise over BLE |
 
 Notation: **[V]** — verified against source code or primary documentation (link given); **[S]** — secondary source (vendor blog, forum, third-party measurements); **[H]** — hypothesis/estimate, requires an experiment.
 

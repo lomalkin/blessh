@@ -1,8 +1,8 @@
 > Research working notes (2026-10-24): client platforms beyond the Android app and the Linux ProxyCommand. Not yet acted on; decisions go to backlog.md.
 
-# F. ble-term: client platforms beyond the ConnectBot fork and the Linux ProxyCommand
+# ble-term: client platforms beyond the ConnectBot fork and the Linux ProxyCommand
 
-Research date: 2026-10-24. Labels: **[V]** verified from a primary source (spec, vendor docs, upstream source); **[S]** secondary source (issue threads, forums, READMEs); **[H]** inference that needs a test on hardware. Mobile BLE API facts come from `docs/research/D-mobile-os-ble-apis.md` and are not repeated here.
+Research date: 2026-10-24. Labels: **[V]** verified from a primary source (spec, vendor docs, upstream source); **[S]** secondary source (issue threads, forums, READMEs); **[H]** inference that needs a test on hardware. Mobile BLE API facts come from `docs/research/mobile-os-ble-apis.md` and are not repeated here.
 
 ## Executive summary
 
@@ -91,7 +91,7 @@ Server requirements, from `packaging/sshd_config`:
 * **WebCrypto.** X25519 has shipped since Chrome 133 and Ed25519 since Chrome 137 [S] ([Igalia](https://blogs.igalia.com/jfernandez/?p=1913), [IPFS blog](https://blog.ipfs.tech/2025-08-ed25519/)). A WASM SSH core does not need them, but native Ed25519 allows a **non-extractable** user key stored in IndexedDB.
 * **Better client keys:** FIDO via WebAuthn with OpenSSH's `webauthn-sk-*` signature format, as sshterm and nassh do [S].
 * **Host key pinning.** Use trust on first use with a fingerprint prompt, and store known_hosts in IndexedDB keyed by the INFO `name`. The browser never sees the MAC address and gives a per-origin device id.
-* **Terminal.** xterm.js; mobile input issues are listed in `B-terminal-engines.md`.
+* **Terminal.** xterm.js; mobile input issues are listed in `terminal-engines.md`.
 
 ### Size and risks
 
@@ -121,7 +121,7 @@ Server requirements, from `packaging/sshd_config`:
 | **Android, any SSH app** | Small "BLE bridge" app: foreground service that listens on 127.0.0.1:N and pumps BleStream; `ssh -p N user@127.0.0.1` from Termux, JuiceSSH, Termius | Yes | 2–3 wk (reuse the ConnectBot fork's BleStream code) | See notes |
 
 **macOS notes**
-* No MAC address: select by INFO or advertised name, or by the CoreBluetooth UUID. That UUID is per Mac, not portable [V, D-doc].
+* No MAC address: select by INFO or advertised name, or by the CoreBluetooth UUID. That UUID is per Mac, not portable [V, mobile-os-ble-apis.md].
 * TCC Bluetooth prompt: a CLI tool needs an embedded `Info.plist` with `NSBluetoothAlwaysUsageDescription`, and the permission is attributed to the terminal app [H].
 * Gate writes on `canSendWriteWithoutResponse`; `btleplug` may not do this [H]. Fallback: write with response.
 * MTU comes from `maximumWriteValueLength(.withoutResponse)`.
@@ -139,7 +139,7 @@ Server requirements, from `packaging/sshd_config`:
 * Alternative: libssh2 over a `socketpair` (gives keyboard-interactive).
 * `bluetooth-central` background mode. Force-quit ends the session (QA1962).
 * No MAC: pin by INFO name plus host key.
-* L2CAP CoC is possible but unproven against BlueZ (D-doc).
+* L2CAP CoC is possible but unproven against BlueZ (mobile-os-ble-apis.md).
 * Closed apps (Termius, Blink, Prompt) cannot be extended. Blink is GPLv3 and could be forked, but that is a heavy route.
 * A localhost bridge does not work: iOS suspends the bridge app while the SSH app is in the foreground [H].
 
