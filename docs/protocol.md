@@ -76,7 +76,10 @@ error, 3 session unavailable (server could not start sshd), 4 timeout.
    (sequence 0). The server sends its HELLO on TX once both characteristics are
    in use. Both HELLOs may cross; neither side sends DATA before it has
    received the peer's HELLO.
-2. A side that receives DATA or CREDIT before HELLO, a second HELLO, or an
+2. Until the peer's HELLO has arrived, a side accepts only a HELLO or a
+   CLOSE (e.g. busy) with sequence number 0 and silently ignores every
+   other packet: on a reused connection, frames of the previous session (a
+   late CLOSE, a CREDIT in flight) can still arrive. A second HELLO or an
    unsupported version closes the link with reason 2.
 3. After the handshake the server starts the SSH session; the stream then
    carries raw SSH protocol bytes in both directions.

@@ -20,7 +20,10 @@ description is [protocol.md](protocol.md).
   in protocol.md stay valid and are checked by both the Rust tests and
   `BleStreamLinkTest` in the client.
 * **Handshake:** HELLO with magic `BLTM` and version 1. Either side may send
-  HELLO first; neither sends DATA before the peer's HELLO.
+  HELLO first; neither sends DATA before the peer's HELLO. Before the
+  peer's HELLO, receivers ignore everything but a HELLO or CLOSE with
+  sequence 0 (servers from 0.1.3; earlier receivers closed the link on
+  such leftovers, which no sender relies on).
 * **Flow control:** window from HELLO, CREDIT semantics, no DATA without
   credit, control frames not counted.
 * **CLOSE reasons 0–4** keep their meaning.

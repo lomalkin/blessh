@@ -161,10 +161,7 @@ impl Frame {
                     .first()
                     .map(|r| CloseReason::from_u8(*r))
                     .unwrap_or(CloseReason::Normal);
-                let message = p
-                    .get(1..)
-                    .map(|m| String::from_utf8_lossy(m).into_owned())
-                    .unwrap_or_default();
+                let message = p.get(1..).map(close_text).unwrap_or_default();
                 Frame::Close { reason, message }
             }
             t => return Err(DecodeError::UnknownType(t)),
@@ -241,6 +238,19 @@ mod tests {
         );
         assert_eq!(Frame::decode(&[3, 0, 0, 1]), Err(DecodeError::BadCredit));
     }
+}
+
+/// CLOSE message bytes as text; invalid UTF-8 is replaced.
+#[cfg(not(kani))]
+fn close_text(m: &[u8]) -> String {
+    String::from_utf8_lossy(m).into_owned()
+}
+
+/// Model checking treats the CLOSE text as opaque: std's UTF-8 decoder is
+/// trusted, and unrolling it for symbolic bytes exhausts the solver.
+#[cfg(kani)]
+fn close_text(_m: &[u8]) -> String {
+    String::new()
 }
 
 /// Makes text that came from the peer (CLOSE messages) safe to log: control

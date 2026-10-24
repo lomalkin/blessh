@@ -114,6 +114,12 @@ pub async fn handshake<R: PacketRx, T: PacketTx>(
             }
             let events = link.on_packet(&pkt)?;
             if link.is_open() {
+                if link.ignored() > 0 {
+                    log::debug!(
+                        "ignored {} packets left over from a previous session",
+                        link.ignored()
+                    );
+                }
                 return Ok(events);
             }
         }

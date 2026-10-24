@@ -26,7 +26,7 @@ use bluer::{
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, warn};
-use tokio::{io::AsyncWriteExt, net::UnixStream, task::JoinHandle, time::Instant};
+use tokio::{io::AsyncWriteExt, net::UnixStream, sync::mpsc, task::JoinHandle, time::Instant};
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "SSH over Bluetooth LE: BlueZ GATT server")]
@@ -55,19 +55,46 @@ struct Args {
     host_key: PathBuf,
 }
 
+/// Characteristics opened by a client before both are there.
 struct Pending {
+    id: u64,
     reader: Option<CharacteristicReader>,
     writer: Option<Arc<CharacteristicWriter>>,
     since: Instant,
+    /// Reports the end of the link the sockets belong to (see `watch`).
+    watcher: Option<JoinHandle<()>>,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if let Some(w) = self.watcher.take() {
+            w.abort();
+        }
+    }
 }
 
 impl Pending {
     fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             reader: None,
             writer: None,
             since: Instant::now(),
+            watcher: None,
         }
+    }
+
+    /// Called when the first socket arrives. A socket belongs to one link:
+    /// one acquired just before a disconnect (a late write of the previous
+    /// session) must not be paired with a socket of the next link, so the
+    /// pending state is dropped when this link goes down.
+    fn watch(&mut self, adapter: &Adapter, addr: Address, gone: &mpsc::UnboundedSender<u64>) {
+        let (adapter, gone, id) = (adapter.clone(), gone.clone(), self.id);
+        self.watcher = Some(tokio::spawn(async move {
+            disconnected(&adapter, addr).await;
+            let _ = gone.send(id);
+        }));
     }
 
     fn address(&self) -> Option<Address> {
@@ -258,6 +285,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     tokio::pin!(rx_control, tx_control);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
+    let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<u64>();
     let mut active: Option<(Address, JoinHandle<SessionEnd>)> = None;
     // Notification socket of a session that ended cleanly while its link
     // stays up. The client may reuse the link right away; it then rewrites
@@ -288,6 +316,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         debug!("{addr}: write acquired, MTU {}", req.mtu());
                         if pending.address().is_none() {
                             pending.since = Instant::now();
+                            pending.watch(&adapter, addr, &gone_tx);
                         }
                         pending.reader = Some(req.accept()?);
                         match parked.take() {
@@ -328,6 +357,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         debug!("{addr}: notifications enabled, MTU {}", writer.mtu());
                         if pending.address().is_none() {
                             pending.since = Instant::now();
+                            pending.watch(&adapter, addr, &gone_tx);
                         }
                         if parked.as_ref().is_some_and(|w| w.device_address() == addr) {
                             parked = None;
@@ -338,6 +368,14 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Some(_) => {}
                 None => return Err("GATT application was unregistered".into()),
             },
+            Some(id) = gone_rx.recv() => {
+                if id == pending.id {
+                    if let Some(addr) = pending.address() {
+                        info!("{addr}: link went down, dropping its half-opened stream");
+                    }
+                    pending = Pending::new();
+                }
+            }
             done = async { (&mut active.as_mut().unwrap().1).await }, if active.is_some() => {
                 let (addr, _) = active.take().unwrap();
                 debug!("{addr}: session task finished");
@@ -401,8 +439,8 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if active.is_none() && pending.reader.is_some() && pending.writer.is_some() {
-            let p = std::mem::replace(&mut pending, Pending::new());
-            let (reader, writer) = (p.reader.unwrap(), p.writer.unwrap());
+            let mut p = std::mem::replace(&mut pending, Pending::new());
+            let (reader, writer) = (p.reader.take().unwrap(), p.writer.take().unwrap());
             let addr = reader.device_address();
             if writer.device_address() != addr {
                 warn!(
@@ -478,23 +516,28 @@ async fn other_client(
     None
 }
 
+/// Resolves when the device is not connected (now or later).
+async fn disconnected(adapter: &Adapter, addr: Address) {
+    let Ok(dev) = adapter.device(addr) else {
+        return;
+    };
+    let Ok(mut events) = dev.events().await else {
+        return;
+    };
+    if !dev.is_connected().await.unwrap_or(false) {
+        return;
+    }
+    while let Some(DeviceEvent::PropertyChanged(p)) = events.next().await {
+        if let DeviceProperty::Connected(false) = p {
+            return;
+        }
+    }
+}
+
 /// Resolves when the device is no longer connected or the notify socket closes.
 async fn link_gone(adapter: Adapter, addr: Address, writer: Arc<CharacteristicWriter>) {
-    let watch = async {
-        let dev = adapter.device(addr).ok()?;
-        let mut events = dev.events().await.ok()?;
-        if !dev.is_connected().await.unwrap_or(false) {
-            return Some(());
-        }
-        while let Some(DeviceEvent::PropertyChanged(p)) = events.next().await {
-            if let DeviceProperty::Connected(false) = p {
-                return Some(());
-            }
-        }
-        Some(())
-    };
     tokio::select! {
-        _ = watch => {}
+        _ = disconnected(&adapter, addr) => {}
         _ = writer.closed() => {}
     }
 }

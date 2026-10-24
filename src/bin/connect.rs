@@ -233,6 +233,45 @@ fn eatt_hint() -> Option<String> {
     old.then(|| format!("BlueZ {version} enables EATT by default"))
 }
 
+/// Waits until no other ble-term-connect of this user uses the device, and
+/// keeps it that way while the returned file is open. ssh does not wait for
+/// its ProxyCommand to exit, so a second connection made right away can start
+/// while the previous client is still disconnecting; sharing the link
+/// breaks the new session.
+async fn lock_device(addr: Address) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let name = format!(
+        "ble-term-connect-{}.lock",
+        addr.to_string().replace(':', "")
+    );
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(&name))
+    {
+        Ok(f) => f,
+        Err(e) => {
+            debug!("cannot open lock file {name}: {e}");
+            return None;
+        }
+    };
+    for attempt in 0..100 {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Some(file);
+        }
+        if attempt == 0 {
+            info!("waiting for another ble-term-connect to release {addr}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    warn!("another ble-term-connect still uses {addr}, connecting anyway");
+    None
+}
+
 async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     if let Some(why) = eatt_hint() {
         warn!(
@@ -255,6 +294,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         }
         return Err("no ble-term server found".into());
     };
+    let _lock = lock_device(dev.address()).await;
     info!("connecting to {}", dev.address());
     if !dev.is_connected().await? {
         let mut attempt = 0;

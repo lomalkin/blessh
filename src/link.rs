@@ -3,10 +3,17 @@
 //! The link turns a byte stream into frames that fit one ATT value, enforces
 //! credit based flow control in both directions and restores frame order when
 //! the GATT layer delivers packets out of order (possible with EATT).
+//!
+//! Until the peer's HELLO has arrived, the link accepts only a HELLO or a
+//! CLOSE with sequence number 0 and ignores every other packet: on a reused
+//! connection, frames of the previous session (a late CLOSE, a CREDIT in
+//! flight) can still arrive before the new session starts.
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::protocol::{CloseReason, DecodeError, Frame, HEADER_LEN, MAX_FRAME, MIN_FRAME, VERSION};
+use crate::protocol::{
+    CloseReason, DecodeError, Frame, HEADER_LEN, MAX_FRAME, MIN_FRAME, T_CLOSE, T_HELLO, VERSION,
+};
 
 /// Frames that may arrive ahead of the next expected sequence number.
 const REORDER_LIMIT: u16 = 64;
@@ -29,7 +36,6 @@ pub enum LinkError {
     Decode(DecodeError),
     UnsupportedVersion(u8),
     UnexpectedHello,
-    DataBeforeHello,
     WindowExceeded,
     OutOfOrder { expected: u16, got: u16 },
 }
@@ -40,7 +46,6 @@ impl std::fmt::Display for LinkError {
             Self::Decode(e) => write!(f, "{e}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported protocol version {v}"),
             Self::UnexpectedHello => write!(f, "duplicate HELLO"),
-            Self::DataBeforeHello => write!(f, "frame received before HELLO"),
             Self::WindowExceeded => write!(f, "peer exceeded the receive window"),
             Self::OutOfOrder { expected, got } => {
                 write!(f, "sequence error: expected {expected}, got {got}")
@@ -55,6 +60,12 @@ impl From<DecodeError> for LinkError {
     fn from(e: DecodeError) -> Self {
         Self::Decode(e)
     }
+}
+
+/// Whether a packet can be the first one of a session: a HELLO or a CLOSE
+/// (e.g. "busy" instead of a HELLO), with sequence number 0.
+fn starts_session(pkt: &[u8]) -> bool {
+    pkt.len() >= HEADER_LEN && matches!(pkt[0], T_HELLO | T_CLOSE) && pkt[1] == 0 && pkt[2] == 0
 }
 
 pub struct Link {
@@ -77,6 +88,8 @@ pub struct Link {
     bytes_received: u64,
     /// Frames that arrived ahead of their turn.
     reordered: u64,
+    /// Packets ignored because they arrived before the peer's HELLO.
+    ignored: u64,
 }
 
 impl Link {
@@ -96,6 +109,7 @@ impl Link {
             rx_seq: 0,
             reorder: BTreeMap::new(),
             reordered: 0,
+            ignored: 0,
             peer_open: false,
             send_credit: 0,
             recv_allowance: recv_window as u64,
@@ -167,6 +181,12 @@ impl Link {
         self.reordered
     }
 
+    /// Number of packets ignored before the peer's HELLO (left over from a
+    /// previous session on the same connection).
+    pub fn ignored(&self) -> u64 {
+        self.ignored
+    }
+
     /// Queues stream data for sending.
     pub fn send(&mut self, data: &[u8]) {
         if !self.closing {
@@ -229,6 +249,10 @@ impl Link {
 
     /// Processes one received packet.
     pub fn on_packet(&mut self, pkt: &[u8]) -> Result<Vec<Event>, LinkError> {
+        if !self.peer_open && !starts_session(pkt) {
+            self.ignored += 1;
+            return Ok(Vec::new());
+        }
         let (seq, frame) = Frame::decode(pkt)?;
         let mut events = Vec::new();
         if seq != self.rx_seq {
@@ -269,7 +293,6 @@ impl Link {
                 events.push(Event::Open { window });
             }
             Frame::Close { reason, message } => events.push(Event::Closed { reason, message }),
-            _ if !self.peer_open => return Err(LinkError::DataBeforeHello),
             Frame::Data(d) => {
                 if d.len() as u64 > self.recv_allowance {
                     return Err(LinkError::WindowExceeded);
@@ -380,13 +403,62 @@ mod tests {
         assert_eq!(b.on_packet(&pkt), Err(LinkError::WindowExceeded));
         let mut c = Link::new(20, 100);
         assert_eq!(
-            c.on_packet(&Frame::Data(vec![1]).encode(0)),
-            Err(LinkError::DataBeforeHello)
+            c.on_packet(
+                &Frame::Hello {
+                    version: 2,
+                    flags: 0,
+                    window: 1
+                }
+                .encode(0)
+            ),
+            Err(LinkError::UnsupportedVersion(2))
         );
-        let mut d = Link::new(20, 100);
         assert!(matches!(
-            d.on_packet(&Frame::Credit(1).encode(500)),
+            b.on_packet(&Frame::Credit(1).encode(500)),
             Err(LinkError::OutOfOrder { .. })
+        ));
+    }
+
+    #[test]
+    fn ignores_leftovers_before_hello() {
+        let mut a = Link::new(20, 100);
+        let mut b = Link::new(20, 100);
+        // Late frames of an earlier session on the same connection.
+        let close = Frame::Close {
+            reason: CloseReason::Normal,
+            message: "session ended".into(),
+        };
+        for pkt in [
+            close.encode(16),
+            Frame::Credit(8).encode(17),
+            Frame::Data(vec![1]).encode(0),
+            vec![0, 0x65, 0x73],
+            vec![],
+        ] {
+            assert_eq!(b.on_packet(&pkt), Ok(vec![]));
+        }
+        assert_eq!(b.ignored(), 5);
+        assert!(!b.is_open());
+        pump(&mut a, &mut b);
+        assert!(b.is_open());
+        // After HELLO the usual checks apply again.
+        assert!(b.on_packet(&close.encode(500)).is_err());
+    }
+
+    #[test]
+    fn busy_close_without_hello() {
+        let mut a = Link::new(20, 100);
+        let busy = Frame::Close {
+            reason: CloseReason::Busy,
+            message: "another client is connected".into(),
+        };
+        let events = a.on_packet(&busy.encode(0)).unwrap();
+        assert!(matches!(
+            events[..],
+            [Event::Closed {
+                reason: CloseReason::Busy,
+                ..
+            }]
         ));
     }
 
@@ -446,6 +518,7 @@ mod proofs {
 
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn decode_never_panics() {
         let pkt = any_packet::<16>();
         if let Ok((seq, frame)) = Frame::decode(&pkt) {
@@ -457,6 +530,7 @@ mod proofs {
     /// application consuming arbitrary amounts in between.
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn packets_keep_invariants() {
         let window: u32 = kani::any();
         kani::assume(window > 0 && window <= 64);
@@ -487,6 +561,7 @@ mod proofs {
     /// frame size limit.
     #[kani::proof]
     #[kani::unwind(9)]
+    #[kani::solver(cadical)]
     fn data_respects_credit_and_frame_size() {
         let mut link = Link::new(MIN_FRAME, 16);
         let window: u32 = kani::any();
