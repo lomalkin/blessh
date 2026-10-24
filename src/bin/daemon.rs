@@ -9,6 +9,7 @@ use ble_term::{
     link::Link,
     logging,
     protocol::{CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID, VERSION},
+    session::{self, Preamble},
 };
 use bluer::{
     adv::{Advertisement, AdvertisementHandle},
@@ -20,12 +21,12 @@ use bluer::{
         },
         CharacteristicReader, CharacteristicWriter,
     },
-    Adapter, Address, DeviceEvent, DeviceProperty,
+    Adapter, Address, AddressType, DeviceEvent, DeviceProperty,
 };
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, warn};
-use tokio::{net::UnixStream, task::JoinHandle, time::Instant};
+use tokio::{io::AsyncWriteExt, net::UnixStream, task::JoinHandle, time::Instant};
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "SSH over Bluetooth LE: BlueZ GATT server")]
@@ -93,14 +94,68 @@ fn host_name() -> String {
         .unwrap_or_else(|_| "ble-term".into())
 }
 
-async fn wait_powered(adapter: &Adapter) -> bluer::Result<()> {
+/// Why an adapter is off, with the command that fixes it.
+fn power_hint(adapter: &str) -> String {
+    let rfkill = std::fs::read_dir(format!("/sys/class/bluetooth/{adapter}"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("rfkill"))
+        .map(|e| e.path());
+    let flag = |name: &str| {
+        rfkill
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p.join(name)).ok())
+            .is_some_and(|v| v.trim() == "1")
+    };
+    if flag("hard") {
+        "it is blocked by a hardware switch or the firmware (rfkill hard block)".into()
+    } else if flag("soft") {
+        "it is blocked by rfkill; unblock it with `sudo rfkill unblock bluetooth`".into()
+    } else {
+        "switch it on with `bluetoothctl power on`".into()
+    }
+}
+
+async fn wait_adapter(session: &bluer::Session, name: Option<&str>) -> bluer::Result<Adapter> {
     let mut warned = false;
-    while !adapter.is_powered().await? {
+    loop {
+        let found = match name {
+            Some(n) => session
+                .adapter_names()
+                .await?
+                .iter()
+                .any(|a| a == n)
+                .then(|| session.adapter(n))
+                .transpose()?,
+            None => session.default_adapter().await.ok(),
+        };
+        if let Some(a) = found {
+            return Ok(a);
+        }
         if !warned {
-            warn!("adapter {} is powered off, waiting", adapter.name());
+            warn!(
+                "Bluetooth adapter {} not found, waiting for it to appear",
+                name.unwrap_or("(any)")
+            );
             warned = true;
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn wait_powered(adapter: &Adapter) -> bluer::Result<()> {
+    let mut last_hint = None;
+    while !adapter.is_powered().await? {
+        let hint = power_hint(adapter.name());
+        if last_hint.as_ref() != Some(&hint) {
+            warn!("Bluetooth adapter {} is off: {hint}", adapter.name());
+            last_hint = Some(hint);
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    if last_hint.is_some() {
+        info!("Bluetooth adapter {} is on", adapter.name());
     }
     Ok(())
 }
@@ -117,10 +172,7 @@ async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<Advertisement
 
 async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let session = bluer::Session::new().await?;
-    let adapter = match &args.adapter {
-        Some(name) => session.adapter(name)?,
-        None => session.default_adapter().await?,
-    };
+    let adapter = wait_adapter(&session, args.adapter.as_deref()).await?;
     wait_powered(&adapter).await?;
     let name = args.name.clone().unwrap_or_else(host_name);
     info!(
@@ -344,7 +396,24 @@ async fn link_gone(adapter: Adapter, addr: Address, writer: Arc<CharacteristicWr
     }
 }
 
+async fn address_type(adapter: &Adapter, addr: Address) -> &'static str {
+    let t = match adapter.device(addr) {
+        Ok(dev) => dev.address_type().await.ok(),
+        Err(_) => None,
+    };
+    match t {
+        Some(AddressType::LePublic) => "public",
+        Some(AddressType::LeRandom) => "random",
+        _ => "unknown",
+    }
+}
+
 /// Runs one session; returns true if the device should be disconnected.
+///
+/// Every session gets a random id. The daemon logs it with the device
+/// address when the session starts and with duration, byte counts and the
+/// way it ended when it is over; ble-term-session logs the same id in the
+/// journal of the sshd it starts, which ties logins to BLE devices.
 async fn run_session(
     adapter: Adapter,
     addr: Address,
@@ -355,8 +424,16 @@ async fn run_session(
     let writer = Arc::new(writer);
     let mut tx = writer.clone();
     let mut link = Link::new(writer.mtu(), args.window);
+    let started = Instant::now();
+    let preamble = Preamble {
+        id: session::new_id(),
+        device: addr.to_string(),
+        address_type: address_type(&adapter, addr).await.into(),
+    };
+    let id = preamble.id.clone();
     info!(
-        "{addr}: client connected (notify MTU {}, write MTU {})",
+        "{addr}: session {id}: client connected ({} address, notify MTU {}, write MTU {})",
+        preamble.address_type,
         writer.mtu(),
         reader.mtu()
     );
@@ -369,11 +446,16 @@ async fn run_session(
             Duration::from_secs(args.handshake_timeout),
         )
         .await?;
-        let stream = match UnixStream::connect(&args.session_socket).await {
+        let stream = async {
+            let mut s = UnixStream::connect(&args.session_socket).await?;
+            s.write_all(preamble.encode().as_bytes()).await?;
+            Ok::<_, std::io::Error>(s)
+        };
+        let stream = match stream.await {
             Ok(s) => s,
             Err(e) => {
                 error!(
-                    "{addr}: cannot start session via {}: {e}",
+                    "{addr}: session {id}: cannot start session via {}: {e}",
                     args.session_socket.display()
                 );
                 link.close(CloseReason::SessionUnavailable, "cannot start session");
@@ -383,7 +465,7 @@ async fn run_session(
                 return Ok(None);
             }
         };
-        info!("{addr}: session started");
+        info!("{addr}: session {id}: SSH session started");
         let gone = link_gone(adapter.clone(), addr, writer.clone());
         bridge::run(&mut link, &mut reader, &mut tx, stream, initial, gone)
             .await
@@ -391,38 +473,30 @@ async fn run_session(
     }
     .await;
 
-    let lost = match result {
-        Ok(Some(Outcome::StreamEnded)) => {
-            info!("{addr}: session ended");
-            false
-        }
-        Ok(Some(Outcome::PeerClosed { reason, message })) => {
-            info!("{addr}: client closed the session ({reason:?} {message})");
-            false
-        }
-        Ok(Some(Outcome::LinkLost | Outcome::Cancelled)) => {
-            info!("{addr}: client disconnected");
-            true
-        }
-        Ok(None) => false,
+    let (end, lost) = match result {
+        Ok(Some(Outcome::StreamEnded)) => ("server ended the session".to_owned(), false),
+        Ok(Some(Outcome::PeerClosed { reason, message })) => (
+            format!("client closed the session ({reason:?} {message})"),
+            false,
+        ),
+        Ok(Some(Outcome::LinkLost | Outcome::Cancelled)) => ("client disconnected".into(), true),
+        Ok(None) => ("session unavailable".into(), false),
         Err(BridgeError::Protocol(e)) => {
-            warn!("{addr}: {e}");
             link.close(CloseReason::ProtocolError, &e.to_string());
             while let Some(p) = link.poll_transmit() {
                 if tx.send(&p).await.is_err() {
                     break;
                 }
             }
-            false
+            (format!("protocol error: {e}"), false)
         }
-        Err(BridgeError::HandshakeTimeout) => {
-            info!("{addr}: handshake timed out");
-            false
-        }
-        Err(BridgeError::Io(e)) => {
-            info!("{addr}: link error: {e}");
-            true
-        }
+        Err(BridgeError::HandshakeTimeout) => ("handshake timed out".into(), false),
+        Err(BridgeError::Io(e)) => (format!("link error: {e}"), true),
     };
+    let (sent, received) = link.stats();
+    info!(
+        "{addr}: session {id}: ended after {}s, {received} bytes from client, {sent} bytes to client: {end}",
+        started.elapsed().as_secs()
+    );
     !lost
 }

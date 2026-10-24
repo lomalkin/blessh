@@ -2,7 +2,8 @@
 # End-to-end test over real BlueZ with two virtual controllers (btvirt):
 # ble-term-daemon serves on hci0 as an unprivileged user, ble-term-connect
 # connects from hci1 as an OpenSSH ProxyCommand. sshd is started per
-# connection by systemd-socket-activate, mimicking ble-term-session.socket.
+# connection by systemd-socket-activate and ble-term-session, mimicking
+# ble-term-session.socket.
 set -eu
 
 BIN=$(pwd)/target/debug
@@ -25,7 +26,7 @@ PidFile none
 LogLevel ERROR
 CFG
 
-systemd-socket-activate -l "$T/session.sock" --inetd -a /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
+systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/ble-term-session" -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
     > "$T/socket-activate.log" 2>&1 &
 SA=$!
 RUST_LOG=debug "$BIN/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \

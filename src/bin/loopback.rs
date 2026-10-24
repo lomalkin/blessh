@@ -11,11 +11,12 @@ use ble_term::{
     bridge::{self, PacketRx, PacketTx},
     link::Link,
     logging,
+    session::{self, Preamble},
 };
 use clap::Parser;
 use log::info;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::UnixStream,
     sync::{mpsc, Mutex},
 };
@@ -25,7 +26,8 @@ struct Args {
     /// Session command; its stdin/stdout become the session stream.
     #[arg(long, conflicts_with = "socket")]
     exec: Option<String>,
-    /// Session socket (like the daemon's --session-socket).
+    /// Session socket (like the daemon's --session-socket); a session
+    /// preamble with a dummy device address is sent first.
     #[arg(long)]
     socket: Option<PathBuf>,
     /// Simulated maximum frame size (ATT value).
@@ -144,7 +146,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop(child);
         })
     } else if let Some(path) = &args.socket {
-        let stream = UnixStream::connect(path).await?;
+        let mut stream = UnixStream::connect(path).await?;
+        let preamble = Preamble {
+            id: session::new_id(),
+            device: "00:00:00:00:00:00".into(),
+            address_type: "unknown".into(),
+        };
+        stream.write_all(preamble.encode().as_bytes()).await?;
         tokio::spawn(server_half(server_link, c2s_rx, s2c_tx, stream))
     } else {
         return Err("either --exec or --socket is required".into());

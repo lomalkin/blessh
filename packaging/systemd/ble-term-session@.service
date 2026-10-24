@@ -5,7 +5,9 @@ Documentation=file:///usr/share/doc/ble-term/README.md
 ConditionPathExists=/etc/ble-term/ssh_host_ed25519_key
 
 [Service]
-ExecStart=-/usr/sbin/sshd -i -f /etc/ble-term/sshd_config
+# ble-term-session logs the session id and BLE device sent by the daemon,
+# then execs sshd; both end up in the journal of this unit.
+ExecStart=-/usr/lib/ble-term/ble-term-session -- /usr/sbin/sshd -i -f /etc/ble-term/sshd_config
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

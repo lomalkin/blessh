@@ -73,6 +73,8 @@ pub struct Link {
     control: VecDeque<Frame>,
     outgoing: VecDeque<u8>,
     closing: bool,
+    bytes_sent: u64,
+    bytes_received: u64,
 }
 
 impl Link {
@@ -99,6 +101,8 @@ impl Link {
             control,
             outgoing: VecDeque::new(),
             closing: false,
+            bytes_sent: 0,
+            bytes_received: 0,
         }
     }
 
@@ -124,10 +128,16 @@ impl Link {
         self.control.is_empty() && (self.outgoing.is_empty() || self.closing)
     }
 
+    /// Stream bytes (queued for sending, received) so far.
+    pub fn stats(&self) -> (u64, u64) {
+        (self.bytes_sent, self.bytes_received)
+    }
+
     /// Queues stream data for sending.
     pub fn send(&mut self, data: &[u8]) {
         if !self.closing {
             self.outgoing.extend(data);
+            self.bytes_sent += data.len() as u64;
         }
     }
 
@@ -230,6 +240,7 @@ impl Link {
                     return Err(LinkError::WindowExceeded);
                 }
                 self.recv_allowance -= d.len() as u64;
+                self.bytes_received += d.len() as u64;
                 if !d.is_empty() {
                     events.push(Event::Data(d));
                 }

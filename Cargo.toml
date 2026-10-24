@@ -20,6 +20,10 @@ name = "ble-term-connect"
 path = "src/bin/connect.rs"
 
 [[bin]]
+name = "ble-term-session"
+path = "src/bin/session.rs"
+
+[[bin]]
 name = "ble-term-loopback"
 path = "src/bin/loopback.rs"
 
@@ -65,6 +69,7 @@ conf-files = ["/etc/ble-term/sshd_config", "/etc/default/ble-term"]
 assets = [
     ["target/release/ble-term-daemon", "usr/sbin/", "755"],
     ["target/release/ble-term-connect", "usr/bin/", "755"],
+    ["target/release/ble-term-session", "usr/lib/ble-term/", "755"],
     ["packaging/sshd_config", "etc/ble-term/sshd_config", "644"],
     ["packaging/default", "etc/default/ble-term", "644"],
     ["packaging/systemd/ble-term.service", "lib/systemd/system/", "644"],
