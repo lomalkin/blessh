@@ -8,7 +8,7 @@ use ble_term::{
     bridge::{self, BridgeError, Outcome, PacketTx},
     link::Link,
     logging,
-    protocol::{CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID, VERSION},
+    protocol::{printable, CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID, VERSION},
     session::{self, Preamble},
 };
 use bluer::{
@@ -605,7 +605,7 @@ async fn run_session(
     let (end, lost) = match result {
         Ok(Some(Outcome::StreamEnded)) => ("server ended the session".to_owned(), false),
         Ok(Some(Outcome::PeerClosed { reason, message })) => (
-            format!("client closed the session ({reason:?} {message})"),
+            format!("client closed the session ({reason:?} {})", printable(&message)),
             false,
         ),
         Ok(Some(Outcome::LinkLost | Outcome::Cancelled)) => ("client disconnected".into(), true),

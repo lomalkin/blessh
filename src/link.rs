@@ -413,3 +413,78 @@ mod tests {
         assert_eq!(data(&pump(&mut a, &mut b)).len(), 17 * 70_000);
     }
 }
+
+/// Bounded model checking with Kani (`cargo kani`): for all inputs up to the
+/// given sizes, the link never panics and its bookkeeping stays consistent.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn any_packet<const N: usize>() -> Vec<u8> {
+        let bytes: [u8; N] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= N);
+        bytes[..len].to_vec()
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn decode_never_panics() {
+        let pkt = any_packet::<16>();
+        if let Ok((seq, frame)) = Frame::decode(&pkt) {
+            let _ = frame.encode(seq);
+        }
+    }
+
+    /// Two arbitrary packets after an arbitrary HELLO-or-not, with the
+    /// application consuming arbitrary amounts in between.
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn packets_keep_invariants() {
+        let window: u32 = kani::any();
+        kani::assume(window > 0 && window <= 64);
+        let mut link = Link::new(kani::any::<u8>() as usize, window);
+        let mut unconsumed: usize = 0;
+        for _ in 0..2 {
+            let pkt = any_packet::<14>();
+            match link.on_packet(&pkt) {
+                Ok(events) => {
+                    for ev in events {
+                        if let Event::Data(d) = ev {
+                            unconsumed += d.len();
+                        }
+                    }
+                    link.check_invariants();
+                }
+                Err(_) => return,
+            }
+            let n: usize = kani::any();
+            kani::assume(n <= unconsumed);
+            unconsumed -= n;
+            link.consumed(n);
+            link.check_invariants();
+        }
+    }
+
+    /// Whatever credit the peer grants, DATA frames never exceed it or the
+    /// frame size limit.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn data_respects_credit_and_frame_size() {
+        let mut link = Link::new(MIN_FRAME, 16);
+        let window: u32 = kani::any();
+        let hello = Frame::Hello { version: VERSION, flags: 0, window }.encode(0);
+        assert!(link.on_packet(&hello).is_ok());
+        let payload: [u8; 8] = kani::any();
+        link.send(&payload);
+        let mut sent: u64 = 0;
+        while let Some(pkt) = link.poll_transmit() {
+            assert!(pkt.len() <= MIN_FRAME);
+            if let Ok((_, Frame::Data(d))) = Frame::decode(&pkt) {
+                sent += d.len() as u64;
+            }
+        }
+        assert!(sent <= window as u64);
+        assert!(sent <= payload.len() as u64);
+    }
+}

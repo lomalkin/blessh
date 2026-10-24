@@ -23,7 +23,10 @@ Compression no
 X11Forwarding no
 AllowAgentForwarding no
 AllowTcpForwarding no
+AllowStreamLocalForwarding no
 PermitTunnel no
+# All of the above and any future forwarding type.
+DisableForwarding yes
 AcceptEnv LANG LC_* COLORTERM
 
 # sntrup761 is excluded: OpenSSH 9.x (Bookworm) offers it as its only

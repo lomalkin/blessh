@@ -89,3 +89,6 @@ assets = [
     ["docs/PROTOCOL.md", "usr/share/doc/ble-term/", "644"],
     ["docs/TESTING.md", "usr/share/doc/ble-term/", "644"],
 ]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)", "cfg(fuzzing)"] }

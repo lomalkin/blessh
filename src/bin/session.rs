@@ -77,7 +77,7 @@ fn read_line(timeout_ms: i32) -> Result<String, String> {
 fn main() {
     logging::init("info");
     let args = Args::parse();
-    let preamble = read_line((args.timeout * 1000).min(i32::MAX as u64) as i32)
+    let preamble = read_line(args.timeout.saturating_mul(1000).min(i32::MAX as u64) as i32)
         .and_then(|l| Preamble::parse(&l).map_err(|e| e.to_string()));
     let p = match preamble {
         Ok(p) => p,

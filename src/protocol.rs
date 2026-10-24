@@ -242,3 +242,27 @@ mod tests {
         assert_eq!(Frame::decode(&[3, 0, 0, 1]), Err(DecodeError::BadCredit));
     }
 }
+
+/// Makes text that came from the peer (CLOSE messages) safe to log: control
+/// characters are escaped, so it cannot start new journal entries or set
+/// their priority, and the length is bounded.
+pub fn printable(s: &str) -> String {
+    let mut out: String = s.chars().take(200).flat_map(char::escape_debug).collect();
+    if s.chars().count() > 200 {
+        out.push_str("...");
+    }
+    out
+}
+
+#[cfg(test)]
+mod printable_tests {
+    use super::printable;
+
+    #[test]
+    fn escapes_control_characters() {
+        assert_eq!(printable("ok"), "ok");
+        assert_eq!(printable("a\n<3>fake entry"), "a\\n<3>fake entry");
+        assert_eq!(printable("\u{1b}[2J"), "\\u{1b}[2J");
+        assert_eq!(printable(&"x".repeat(300)).len(), 203);
+    }
+}

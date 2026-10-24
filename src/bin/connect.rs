@@ -9,7 +9,7 @@ use ble_term::{
     bridge::{self, Outcome, PacketRx, PacketTx},
     link::Link,
     logging,
-    protocol::{CloseReason, RX_UUID, SERVICE_UUID, TX_UUID},
+    protocol::{printable, CloseReason, RX_UUID, SERVICE_UUID, TX_UUID},
 };
 use bluer::{
     gatt::remote::Characteristic, Adapter, AdapterEvent, Address, Device, DiscoveryFilter,
@@ -241,7 +241,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             ..
         } => 0,
         Outcome::PeerClosed { reason, message } => {
-            warn!("server closed the link: {reason:?} {message}");
+            warn!("server closed the link: {reason:?} {}", printable(&message));
             2
         }
         Outcome::LinkLost => {
