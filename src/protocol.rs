@@ -266,3 +266,38 @@ mod printable_tests {
         assert_eq!(printable(&"x".repeat(300)).len(), 203);
     }
 }
+
+/// Value of the INFO characteristic. `mtu` is the ATT MTU of the bearer the
+/// read arrived on, for clients that cannot query it.
+pub fn info(name: &str, mtu: u16) -> String {
+    format!("proto={VERSION};name={name};mtu={mtu}")
+}
+
+/// The part of an attribute value a read at `offset` returns (ATT Read Blob
+/// continues a value longer than the MTU); `None` if the offset is past the
+/// end.
+pub fn read_at(value: &[u8], offset: u16) -> Option<&[u8]> {
+    value.get(usize::from(offset)..)
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::{info, read_at};
+
+    #[test]
+    fn info_value() {
+        assert_eq!(info("pi", 517), "proto=1;name=pi;mtu=517");
+    }
+
+    #[test]
+    fn long_reads_continue_at_offset() {
+        let v = info("a-rather-long-host-name", 23).into_bytes();
+        let mut got = Vec::new();
+        while let Some(part) = read_at(&v, got.len() as u16).filter(|p| !p.is_empty()) {
+            got.extend_from_slice(&part[..part.len().min(22)]);
+        }
+        assert_eq!(got, v);
+        assert_eq!(read_at(&v, v.len() as u16), Some(&[][..]));
+        assert_eq!(read_at(&v, v.len() as u16 + 1), None);
+    }
+}

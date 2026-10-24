@@ -132,10 +132,16 @@ impl Link {
     /// property tests; cheap enough to call after every operation.
     #[doc(hidden)]
     pub fn check_invariants(&self) {
-        assert!(self.reorder.len() <= REORDER_LIMIT as usize, "reorder buffer too large");
+        assert!(
+            self.reorder.len() <= REORDER_LIMIT as usize,
+            "reorder buffer too large"
+        );
         for seq in self.reorder.keys() {
             let ahead = seq.wrapping_sub(self.rx_seq);
-            assert!(ahead > 0 && ahead <= REORDER_LIMIT, "reorder entry outside the window");
+            assert!(
+                ahead > 0 && ahead <= REORDER_LIMIT,
+                "reorder entry outside the window"
+            );
         }
         assert!(
             self.recv_allowance + self.consumed as u64 <= self.recv_window as u64,
@@ -473,7 +479,12 @@ mod proofs {
     fn data_respects_credit_and_frame_size() {
         let mut link = Link::new(MIN_FRAME, 16);
         let window: u32 = kani::any();
-        let hello = Frame::Hello { version: VERSION, flags: 0, window }.encode(0);
+        let hello = Frame::Hello {
+            version: VERSION,
+            flags: 0,
+            window,
+        }
+        .encode(0);
         assert!(link.on_packet(&hello).is_ok());
         let payload: [u8; 8] = kani::any();
         link.send(&payload);

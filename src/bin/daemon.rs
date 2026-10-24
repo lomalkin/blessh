@@ -8,7 +8,7 @@ use ble_term::{
     bridge::{self, BridgeError, Outcome, PacketTx},
     link::Link,
     logging,
-    protocol::{printable, CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID, VERSION},
+    protocol::{self, printable, CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
     session::{self, Preamble},
 };
 use bluer::{
@@ -202,7 +202,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => warn!("cannot read host key {}: {e}", args.host_key.display()),
     }
 
-    let info = format!("proto={VERSION};name={name}").into_bytes();
+    let info_name = name.clone();
     let (rx_control, rx_handle) = characteristic_control();
     let (tx_control, tx_handle) = characteristic_control();
     let app = Application {
@@ -214,9 +214,12 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     uuid: INFO_UUID,
                     read: Some(CharacteristicRead {
                         read: true,
-                        fun: Box::new(move |_| {
-                            let v = info.clone();
-                            async move { Ok(v) }.boxed()
+                        fun: Box::new(move |req| {
+                            let v = protocol::info(&info_name, req.mtu).into_bytes();
+                            let part = protocol::read_at(&v, req.offset)
+                                .map(<[u8]>::to_vec)
+                                .ok_or(ReqError::InvalidOffset);
+                            async move { part }.boxed()
                         }),
                         ..Default::default()
                     }),
@@ -605,7 +608,10 @@ async fn run_session(
     let (end, lost) = match result {
         Ok(Some(Outcome::StreamEnded)) => ("server ended the session".to_owned(), false),
         Ok(Some(Outcome::PeerClosed { reason, message })) => (
-            format!("client closed the session ({reason:?} {})", printable(&message)),
+            format!(
+                "client closed the session ({reason:?} {})",
+                printable(&message)
+            ),
             false,
         ),
         Ok(Some(Outcome::LinkLost | Outcome::Cancelled)) => ("client disconnected".into(), true),

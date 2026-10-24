@@ -35,7 +35,8 @@ description is [PROTOCOL.md](PROTOCOL.md).
 * **HELLO trailing bytes.** Receivers accept and ignore bytes after the
   10-byte HELLO payload; new HELLO fields go there, guarded by a flag.
 * **INFO.** `key=value` pairs separated by `;`. Clients ignore unknown keys;
-  new keys may be added, `proto` and `name` stay.
+  new keys may be added, `proto` and `name` stay. Added so far: `mtu`
+  (0.1.3).
 * **New CLOSE reasons** may be added. Receivers accept unknown reasons (the
   Rust code maps them to "protocol error", the Android client shows the
   number).

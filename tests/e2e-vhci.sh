@@ -62,7 +62,7 @@ run() {
     wait_link_down
     timeout 120 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" -o HostKeyAlias=vhci-server \
-        -o ProxyCommand="env RUST_LOG=info $BIN/ble-term-connect --adapter hci1 $SERVER 2>>$T/connect.log" \
+        -o ProxyCommand="env RUST_LOG=info $BIN/ble-term-connect ${CONNECT_ARGS:-} --adapter hci1 $SERVER 2>>$T/connect.log" \
         "$(id -un)@vhci-server" "$@"
 }
 
@@ -95,6 +95,12 @@ for i in 1 2; do
     tty=$(run -tt tty < /dev/null 2>/dev/null | tr -d '\r')
     case $tty in /dev/pts/*) ;; *) echo "FAIL: no pty: $tty"; exit 1 ;; esac
 done
+
+echo "== INFO and writes with response"
+grep -q "server info: proto=1;name=vhci-server;mtu=[0-9]" "$T/connect.log" || { echo "FAIL: INFO"; exit 1; }
+got=$(CONNECT_ARGS=--write-with-response run 'sha256sum' < "$T/blob" | cut -d' ' -f1)
+[ "$got" = "$want" ] || { echo "FAIL: upload with write requests"; exit 1; }
+grep -q "writing with response" "$T/connect.log" || { echo "FAIL: write mode not used"; exit 1; }
 
 echo "== session ends when the client disappears"
 (run -tt 'sleep 4242' < /dev/null > /dev/null 2>&1 &)

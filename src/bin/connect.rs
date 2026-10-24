@@ -9,11 +9,14 @@ use ble_term::{
     bridge::{self, Outcome, PacketRx, PacketTx},
     link::Link,
     logging,
-    protocol::{printable, CloseReason, RX_UUID, SERVICE_UUID, TX_UUID},
+    protocol::{printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
 };
 use bluer::{
-    gatt::remote::Characteristic, Adapter, AdapterEvent, Address, Device, DiscoveryFilter,
-    DiscoveryTransport,
+    gatt::{
+        remote::{Characteristic, CharacteristicWriteRequest},
+        WriteOp,
+    },
+    Adapter, AdapterEvent, Address, Device, DiscoveryFilter, DiscoveryTransport,
 };
 use clap::Parser;
 use futures::StreamExt;
@@ -46,6 +49,10 @@ struct Args {
     /// seconds (for tests).
     #[arg(long, hide = true)]
     keep_link: bool,
+    /// Write frames with response instead of without (for tests: clients
+    /// whose platform loses writes without response use this).
+    #[arg(long, hide = true)]
+    write_with_response: bool,
 }
 
 struct Rx(bluer::gatt::CharacteristicReader);
@@ -53,6 +60,22 @@ struct Rx(bluer::gatt::CharacteristicReader);
 impl PacketRx for Rx {
     async fn recv(&mut self) -> std::io::Result<Vec<u8>> {
         self.0.recv().await
+    }
+}
+
+/// Writes each frame with response through D-Bus.
+struct RequestTx(Characteristic);
+
+impl PacketTx for RequestTx {
+    async fn send(&mut self, pkt: &[u8]) -> std::io::Result<()> {
+        let req = CharacteristicWriteRequest {
+            op_type: WriteOp::Request,
+            ..Default::default()
+        };
+        self.0
+            .write_ext(pkt, &req)
+            .await
+            .map_err(std::io::Error::other)
     }
 }
 
@@ -147,21 +170,28 @@ async fn find(adapter: &Adapter, args: &Args) -> bluer::Result<Option<Device>> {
     }
 }
 
-async fn characteristics(dev: &Device) -> bluer::Result<Option<(Characteristic, Characteristic)>> {
+struct Chars {
+    info: Option<Characteristic>,
+    rx: Characteristic,
+    tx: Characteristic,
+}
+
+async fn characteristics(dev: &Device) -> bluer::Result<Option<Chars>> {
     for service in dev.services().await? {
         if service.uuid().await? != SERVICE_UUID {
             continue;
         }
-        let (mut rx, mut tx) = (None, None);
+        let (mut info, mut rx, mut tx) = (None, None, None);
         for c in service.characteristics().await? {
             match c.uuid().await? {
+                u if u == INFO_UUID => info = Some(c),
                 u if u == RX_UUID => rx = Some(c),
                 u if u == TX_UUID => tx = Some(c),
                 _ => {}
             }
         }
         if let (Some(rx), Some(tx)) = (rx, tx) {
-            return Ok(Some((rx, tx)));
+            return Ok(Some(Chars { info, rx, tx }));
         }
     }
     Ok(None)
@@ -197,23 +227,50 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             }
         }
     }
-    let Some((rx_char, tx_char)) = characteristics(&dev).await? else {
+    let Some(chars) = characteristics(&dev).await? else {
         return Err("device does not provide the ble-term service".into());
     };
-    let notify = tx_char.notify_io().await?;
-    let writer = rx_char.write_io().await?;
-    info!(
-        "link up: write MTU {}, notify MTU {}",
-        writer.mtu(),
-        notify.mtu()
-    );
+    if let Some(c) = &chars.info {
+        match c.read().await {
+            Ok(v) => info!("server info: {}", printable(&String::from_utf8_lossy(&v))),
+            Err(e) => debug!("cannot read INFO: {e}"),
+        }
+    }
+    let notify = chars.tx.notify_io().await?;
+    let frame = |mtu: usize| args.max_frame.map_or(mtu, |m| m.min(mtu));
+    let code = if args.write_with_response {
+        // The write socket is not acquired: BlueZ refuses WriteValue while
+        // it is held. Both directions share the ATT MTU, which BlueZ reports
+        // here as is (the write socket reports the payload size). A larger
+        // write request would become a long write, split across ATT PDUs.
+        info!(
+            "link up: notify MTU {}, writing with response",
+            notify.mtu()
+        );
+        let link = Link::new(frame(notify.mtu().saturating_sub(3)), args.window);
+        relay(link, Rx(notify), RequestTx(chars.rx)).await?
+    } else {
+        let writer = chars.rx.write_io().await?;
+        info!(
+            "link up: write MTU {}, notify MTU {}",
+            writer.mtu(),
+            notify.mtu()
+        );
+        let link = Link::new(frame(writer.mtu()), args.window);
+        relay(link, Rx(notify), Arc::new(writer)).await?
+    };
+    if !keep_link {
+        let _ = dev.disconnect().await;
+    }
+    Ok(code)
+}
 
-    let mut link = Link::new(
-        args.max_frame.map_or(writer.mtu(), |m| m.min(writer.mtu())),
-        args.window,
-    );
-    let mut rx = Rx(notify);
-    let mut tx = Arc::new(writer);
+/// Runs the session over an open link; returns the exit code.
+async fn relay<T: PacketTx>(
+    mut link: Link,
+    mut rx: Rx,
+    mut tx: T,
+) -> Result<i32, Box<dyn std::error::Error>> {
     let initial = bridge::handshake(&mut link, &mut rx, &mut tx, Duration::from_secs(10)).await?;
     let stdio = bridge::stdio()?;
     // ssh terminates its ProxyCommand with SIGHUP/SIGTERM when it is done.
@@ -249,8 +306,5 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             3
         }
     };
-    if !keep_link {
-        let _ = dev.disconnect().await;
-    }
     Ok(code)
 }
