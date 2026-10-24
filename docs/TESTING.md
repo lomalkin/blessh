@@ -1,91 +1,100 @@
-# Testing ble-term v1 on a Raspberry Pi 5
+# Testing ble-term on real hardware
 
-## What has been verified before hardware tests
+This is the procedure for checking a server device (and a client) for
+[HARDWARE.md](HARDWARE.md). Run the cases that apply, then add a row there
+with the result of each case: `pass`, `fail` (with a link to the issue or a
+note), or `—` (not run).
 
-| Check | How | Result |
-|---|---|---|
-| Protocol state machine (Rust) | `cargo test` | pass |
-| Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI | pass |
-| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY | `tests/e2e-loopback.sh` (CI) | pass |
-| Real BlueZ 5.66 (Bookworm build) GATT path: advertising, discovery, AcquireWrite/AcquireNotify, EATT, 100 KB each way, PTY, reconnects, session ends when the client disappears; daemon unprivileged under Debian's D-Bus policy | `tests/e2e-vhci.sh` with two `btvirt` virtual controllers | pass |
-| `/etc/ble-term/sshd_config` | `sshd -t` / `sshd -T` | valid |
-| `ble-term.service` hardening | `systemd-analyze security` | exposure 1.8 (OK) |
+## Checks that need no hardware
 
-Not verified yet: a real radio (CYW43455 on the Pi 5), BlueZ 5.82, an Android
-phone, the installed `.deb` with systemd and PAM.
+Run on every change (CI does the same):
 
-## 1. Server
+| Check | How |
+|---|---|
+| Protocol state machine (Rust) | `cargo test` |
+| Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
+| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `ble-term-session` | `tests/e2e-loopback.sh` |
+| ARMv6 build: unit tests on an emulated ARM1176 | CI job `deb-armhf` |
+| Real BlueZ GATT path with two virtual controllers (needs root and the `hci_vhci` module) | `tests/e2e-vhci.sh` |
+
+## Setup
+
+Server:
 
 ```
-sudo apt install ./ble-term_0.1.0-<rev>_arm64.deb
+sudo apt install ./ble-term_<version>_<arch>.deb
 ```
 
 The output ends with the BLE SSH host key fingerprint
-(`256 SHA256:… ble-term@<host> (ED25519)`). Note it; ConnectBot shows the same
-fingerprint on first connect.
-
-Checks:
+(`256 SHA256:… ble-term@<host> (ED25519)`); note it. If Bluetooth is off, the
+installer says so and how to switch it on. Then check:
 
 ```
 systemctl status ble-term.service ble-term-session.socket
-journalctl -u ble-term -n 20        # "ready (BlueZ GATT application and advertisement registered)"
-bluetoothctl show                   # Powered: yes
+journalctl -u ble-term -n 20     # ends with "ready (BlueZ GATT application and advertisement registered)"
 ```
 
-If the adapter is off: `sudo rfkill unblock bluetooth; bluetoothctl power on`.
 The daemon advertises the host name. To change it, set
 `BLE_TERM_ARGS="--name my-pi"` in `/etc/default/ble-term` and run
 `sudo systemctl restart ble-term`.
 
-## 2. Android (ConnectBot BLE build)
+Android client (ConnectBot BLE build, package `org.connectbot.debug`, installs
+next to a Play Store ConnectBot; uninstall an earlier test build if Android
+refuses the update):
 
-1. Install `connectbot-ble-<n>-<sha>.apk`. It is a debug build with package id
-   `org.connectbot.debug`, so it installs next to a Play Store ConnectBot. If
-   Android refuses to update an earlier test build, uninstall that build first.
-2. Hosts → **+** → protocol **ble** → **Scan for Bluetooth LE servers**, allow
-   "Nearby devices", pick the Pi. The Bluetooth address and the nickname are
-   filled in. Enter the Pi user name and save. Use the scan button at least once
-   even if you type the address: it is where the permission is requested.
-3. Tap the host. Compare the host key fingerprint with the one from step 1 and
-   accept it, then log in with the Pi user's password. Keys work too: add a
-   ConnectBot public key to `~/.ssh/authorized_keys` on the Pi.
+1. Hosts → **+** → protocol **ble** → **Scan for Bluetooth LE servers**,
+   allow "Nearby devices", pick the server, enter the user name, save.
+2. Tap the host, compare the fingerprint with the one from the installer,
+   log in.
 
-The terminal prints `Connecting to <address> over Bluetooth LE` and
-`Bluetooth LE link up (MTU …)` before the SSH login.
-
-Things worth trying:
-
-* `htop`, `vim`, `nano`, `nmtui`, `tmux`
-* rotating the phone (window resize)
-* long output (`dmesg`, `cat /usr/share/common-licenses/GPL-3`) followed by Ctrl+C
-* `exit`, then reconnecting
-* Bluetooth off on the phone, or walking out of range, in the middle of a
-  session. The session must end on the Pi: check with `who` and
-  `journalctl -u 'ble-term-session@*'`
-
-## 3. Linux desktop client (optional)
-
-On any Linux machine with BlueZ and Bluetooth:
+Desktop Linux client (optional):
 
 ```
-sudo apt install ./ble-term_0.1.0-<rev>_amd64.deb   # or arm64; only ble-term-connect is needed
+sudo apt install ./ble-term_<version>_<arch>.deb
 sudo systemctl disable --now ble-term.service ble-term-session.socket   # client-only machine
 ble-term-connect --scan
-ssh -o ProxyCommand='ble-term-connect <pi-address>' -o HostKeyAlias=pi-ble <user>@pi-ble
+ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-ble <user>@<name>-ble
 ```
 
-## Troubleshooting knobs
+## Cases
 
-* `--readvertise` in `BLE_TERM_ARGS`: if the Pi stops being discoverable after
-  the first session, this re-registers the advertisement after each session.
-  It is off by default because it broke reconnects in the virtual-controller
-  tests.
-* `RUST_LOG=debug` in `/etc/default/ble-term` (as an extra line) for verbose
-  daemon logs.
+| ID | Case | Pass criteria |
+|---|---|---|
+| S1 | Install | Package installs, fingerprint printed, both units active, journal shows `ready` |
+| S2 | Discovery | The server appears in the client's scan |
+| S3 | Login | First connect shows the installer's fingerprint; password login (and key login, if used) succeeds |
+| S4 | Full-screen programs | `htop`, `vim` or `nano`, `tmux` draw and respond correctly |
+| S5 | Window resize | Rotating the phone (or resizing the terminal) resizes the remote terminal (`stty size`) |
+| S6 | Bulk output | `cat /usr/share/common-licenses/GPL-3` or `dmesg` finishes; Ctrl+C during long output stops it |
+| S7 | Exit and reconnect | `exit` ends the session; connecting again works without restarting anything |
+| S8 | Link loss | Bluetooth off on the client, or out of range, mid-session: the session ends on the server (`who`; the journal shows `session …: ended`) and a later connect works |
+| S9 | Second client | A second client while one is connected is refused with "another client is connected"; the first session is unaffected |
+| S10 | Server reboot | After a reboot the units start, the server is discoverable, login works |
+| S11 | Bluetooth off and on on the server | `bluetoothctl power off`, then `on`: the server becomes discoverable again and login works |
+| S12 | Audit log | `journalctl -u ble-term` has session start and end lines with the device address and session id; the matching `ble-term-session@*` unit has the same id followed by the sshd login line |
+| S13 | Upgrade | Installing a newer package over the old one ends the active session (expected) and the server works afterwards |
+| S14 | Long session | A session idle or in use for an hour or more stays alive |
 
-## What to report
+### Audit log (S12)
+
+```
+journalctl -u ble-term | grep 'session '
+journalctl -u 'ble-term-session@*' --grep '<session id>'   # names the unit
+journalctl -u 'ble-term-session@<n>-…'                      # that session's sshd lines
+```
+
+## What to report on failure
 
 * `journalctl -u ble-term -u 'ble-term-session@*' --since '10 min ago'`
 * `bluetoothctl --version`, `uname -r`, `/etc/os-release`
-* Android version and phone model. For app problems:
+* Client: Android version and phone model; for app problems
   `adb logcat -d | grep -i -e BleStream -e "BLE " -e ConnectBot`
+
+## Troubleshooting knobs
+
+* `--readvertise` in `BLE_TERM_ARGS`: if the server stops being discoverable
+  after the first session, this re-registers the advertisement after each
+  session. Off by default because it broke reconnects in the
+  virtual-controller tests.
+* `RUST_LOG=debug` in `/etc/default/ble-term` (as an extra line) for verbose
+  daemon logs.

@@ -1,13 +1,16 @@
 # ble-term
 
 SSH sessions over Bluetooth Low Energy for Linux (BlueZ). Reference
-platform: Raspberry Pi 5 with Raspberry Pi OS / Debian Bookworm or Trixie.
+platform: Raspberry Pi with Raspberry Pi OS / Debian Bookworm or Trixie
+(64-bit `arm64` and 32-bit `armhf` packages). Tested devices:
+[docs/HARDWARE.md](docs/HARDWARE.md).
 
 ```
 phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──▶ ble-term-daemon (_bleterm)
                                                                      │ AF_UNIX
                                        systemd ble-term-session.socket (Accept=yes)
                                                                      ▼
+                                       ble-term-session (logs the BLE device) → exec
                                        sshd -i -f /etc/ble-term/sshd_config  →  PAM, PTY, shell
 ```
 
@@ -17,20 +20,23 @@ phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──
 * **No pairing.** Security comes from SSH: the client pins the BLE host key
   (`/etc/ble-term/ssh_host_ed25519_key`), users log in with their system
   password (PAM) or `~/.ssh/authorized_keys`.
-* **Unprivileged daemon.** Radio input is parsed by `_bleterm`; root code is
-  only OpenSSH's `sshd`, started per connection by systemd. The network SSH
+* **Unprivileged daemon.** Radio input is parsed by `_bleterm`; the only root
+  code is `ble-term-session`, which reads one line from the daemon and execs
+  OpenSSH's `sshd`, started per connection by systemd. The network SSH
   service can stay disabled.
 * **Session lifetime = BLE connection.** On disconnect sshd gets EOF and the
   session receives SIGHUP, exactly like a dropped network SSH connection.
 * One client at a time (v1).
 
-Wire protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md). Test guide:
-[docs/TESTING.md](docs/TESTING.md).
+Wire protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md); what must stay
+compatible with installed clients: [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Test procedure: [docs/TESTING.md](docs/TESTING.md). Repository conventions:
+[docs/AGENTS.md](docs/AGENTS.md).
 
 ## Install
 
 ```
-sudo apt install ./ble-term_<version>_arm64.deb
+sudo apt install ./ble-term_<version>_arm64.deb   # or _armhf.deb on 32-bit systems
 ```
 
 The package creates the `_bleterm` user, generates the BLE SSH host key,
@@ -43,12 +49,24 @@ ssh-keygen -lf /etc/ble-term/ssh_host_ed25519_key.pub
 
 Logs: `journalctl -u ble-term -u 'ble-term-session@*'`.
 
+Audit: every session gets a random id. `ble-term.service` logs it with the
+client's BLE address when the session starts, and with duration, byte counts
+and how it ended when it is over. The session's `ble-term-session@…` unit
+logs the same id and address, followed by sshd's login lines. Note that
+phones use private BLE addresses that change every few minutes, so the
+address identifies a connection rather than a phone.
+
+Upgrades restart the daemon, which ends an active BLE session; the client
+has to reconnect.
+
 Disable: `sudo systemctl disable --now ble-term.service ble-term-session.socket`.
 Remove: `sudo apt purge ble-term`.
 
 Requirements: BlueZ ≥ 5.55 (tested design targets 5.66 and 5.82), OpenSSH
 server package (only the `sshd` binary is used), systemd. The Bluetooth adapter
-must be powered (`bluetoothctl power on`); the daemon waits for it.
+must be on; the daemon waits for it and logs what to do if it is blocked by
+rfkill (`sudo rfkill unblock bluetooth`) or powered off
+(`bluetoothctl power on`). The package does not change the rfkill state.
 
 ## Desktop client
 

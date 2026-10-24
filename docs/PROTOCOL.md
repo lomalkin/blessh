@@ -43,6 +43,10 @@ protocol error.
 | `0x03` | CREDIT | u32 LE: additional DATA bytes the peer may send |
 | `0x04` | CLOSE | reason u8, optional UTF-8 message |
 
+HELLO flags are sent as 0 and receivers ignore unknown bits; receivers also
+ignore bytes after the window field. Both are reserved for compatible
+extensions, see [COMPATIBILITY.md](COMPATIBILITY.md).
+
 CLOSE reasons: 0 normal, 1 busy (another client is connected), 2 protocol
 error, 3 session unavailable (server could not start sshd), 4 timeout.
 

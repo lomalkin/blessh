@@ -3,6 +3,30 @@ set -e
 
 KEY=/etc/ble-term/ssh_host_ed25519_key
 
+# Explains why Bluetooth is unusable, if it is. The package does not change
+# the rfkill state itself: a block is often deliberate.
+bluetooth_hint() {
+    found=
+    for d in /sys/class/bluetooth/hci*; do
+        case $d in *:*) continue ;; esac
+        [ -e "$d" ] || continue
+        found=1
+        hci=${d##*/}
+        for r in "$d"/rfkill*; do
+            [ -r "$r/soft" ] || continue
+            if [ "$(cat "$r/hard")" = 1 ]; then
+                echo "ble-term: Bluetooth adapter $hci is blocked by a hardware switch or the firmware (rfkill hard block)."
+            elif [ "$(cat "$r/soft")" = 1 ]; then
+                echo "ble-term: Bluetooth adapter $hci is off (blocked by rfkill). Switch it on with:"
+                echo "  sudo rfkill unblock bluetooth"
+            fi
+        done
+    done
+    if [ -z "$found" ]; then
+        echo "ble-term: no Bluetooth adapter found; ble-term-daemon will wait for one."
+    fi
+}
+
 if [ "$1" = configure ]; then
     systemd-sysusers ble-term.conf
     systemd-tmpfiles --create ble-term.conf || true
@@ -19,6 +43,7 @@ if [ "$1" = configure ]; then
     fi
     echo "ble-term: BLE SSH host key fingerprint:"
     ssh-keygen -l -f "$KEY.pub" | sed 's/^/  /'
+    bluetooth_hint
 fi
 
 exit 0

@@ -1,0 +1,3 @@
+# Lets QEMU_CPU pick the emulated CPU for `cross test` (see ci.yml).
+[build.env]
+passthrough = ["QEMU_CPU"]

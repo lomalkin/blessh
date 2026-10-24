@@ -17,7 +17,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential ca-certificates curl git \
-            openssh-client openssh-server
+            openssh-client openssh-server systemd python3
       - uses: actions/checkout@v4
       - name: Install Rust
         run: |
@@ -68,3 +68,37 @@ jobs:
         with:
           name: ble-term-${{ matrix.target }}
           path: target/${{ matrix.target }}/debian/*.deb
+
+  # 32-bit Raspberry Pi OS. The ARMv6 target covers every Pi including
+  # Pi Zero (W) and Pi 1; Debian's armhf cross toolchain is ARMv7-only, so
+  # this uses the cross-rs image with an ARMv6 toolchain and sysroot.
+  deb-armhf:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: arm-unknown-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust tools
+        run: |
+          rustup target add "$TARGET"
+          cargo install cross --locked --version 0.2.5
+          cargo install cargo-deb --locked
+      - name: Unit tests on an emulated ARMv6 CPU (ARM1176, as in Pi Zero / Pi 1)
+        env:
+          QEMU_CPU: arm1176
+        run: cross test --target "$TARGET" --lib
+      - name: Build
+        run: cross build --release --target "$TARGET" --bins
+      - name: Check that the binaries are ARMv6
+        run: |
+          for b in ble-term-daemon ble-term-session ble-term-connect; do
+            readelf -A "target/$TARGET/release/$b" | tee /dev/stderr | grep -q 'Tag_CPU_arch: v6$'
+          done
+      - name: Build package
+        run: |
+          cargo deb --target "$TARGET" --no-build --deb-revision "${GITHUB_RUN_NUMBER}"
+          ls -l target/$TARGET/debian/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ble-term-${{ env.TARGET }}
+          path: target/${{ env.TARGET }}/debian/*.deb
