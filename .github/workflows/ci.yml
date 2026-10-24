@@ -64,7 +64,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
         run: |
-          cargo deb --target ${{ matrix.target }} --deb-version "$DEB_VERSION" --deb-revision "$DEB_REVISION"
+          cargo deb --target ${{ matrix.target }} --deb-version "$DEB_VERSION"
           dpkg-deb -f target/${{ matrix.target }}/debian/*.deb Package Version Architecture
       - uses: actions/upload-artifact@v4
         with:
@@ -93,10 +93,13 @@ jobs:
       - name: Raspbian libc for the emulator
         run: |
           base=http://raspbian.raspberrypi.com/raspbian
-          deb=$(curl -sSf "$base/dists/bookworm/main/binary-armhf/Packages.xz" | xz -d |
-            awk '/^Package: libc6$/ {p=1} p && /^Filename:/ {print $2; exit}')
-          curl -sSfo libc6.deb "$base/$deb"
-          mkdir -p sysroot && dpkg-deb -x libc6.deb sysroot
+          curl -sSf "$base/dists/bookworm/main/binary-armhf/Packages.xz" | xz -d > Packages
+          mkdir -p sysroot
+          for pkg in libc6 libgcc-s1; do
+            deb=$(awk -v pkg="$pkg" '$0 == "Package: " pkg {p=1} p && /^Filename:/ {print $2; exit}' Packages)
+            curl -sSfLo "$pkg.deb" "$base/$deb"
+            dpkg-deb -x "$pkg.deb" sysroot
+          done
           echo "QEMU_LD_PREFIX=$PWD/sysroot" >> "$GITHUB_ENV"
       - name: Unit tests on an emulated ARMv6 CPU (ARM1176, as in Pi Zero / Pi 1)
         env:
@@ -121,7 +124,7 @@ jobs:
         run: ci/deb-version.sh >> "$GITHUB_ENV"
       - name: Build package
         run: |
-          cargo deb --target "$TARGET" --no-build --deb-version "$DEB_VERSION" --deb-revision "$DEB_REVISION"
+          cargo deb --target "$TARGET" --no-build --deb-version "$DEB_VERSION"
           dpkg-deb -f target/$TARGET/debian/*.deb Package Version Architecture
       - uses: actions/upload-artifact@v4
         with:

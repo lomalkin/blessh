@@ -35,8 +35,13 @@ Test procedure: [docs/TESTING.md](docs/TESTING.md). Repository conventions:
 
 ## Install
 
+Packages are on the repository's Releases page: `arm64` for 64-bit and
+`armhf` for 32-bit Raspberry Pi OS (every Pi, including Pi Zero and Pi 1),
+`amd64` for PCs. Check the download against `SHA256SUMS`, then install:
+
 ```
-sudo apt install ./ble-term_<version>_arm64.deb   # or _armhf.deb on 32-bit systems
+sha256sum -c --ignore-missing SHA256SUMS
+sudo apt install ./ble-term_<version>_arm64.deb
 ```
 
 The package creates the `_bleterm` user, generates the BLE SSH host key,
@@ -84,6 +89,12 @@ ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' -o HostKeyAlias=my-pi u
 cargo test                          # protocol unit tests
 cargo build && tests/e2e-loopback.sh   # ssh ↔ simulated BLE ↔ sshd -i, no radio needed
 ```
+
+Releases: set `version` in `Cargo.toml`, commit, then push a matching tag
+(`git tag v0.1.2 && git push origin v0.1.2`). CI builds the packages and
+publishes a release with `SHA256SUMS` and the commit subjects since the
+previous tag. Untagged CI builds are versioned `X.Y.Z~ciN`, which sorts
+before the `X.Y.Z` release.
 
 `ble-term-loopback` runs both protocol ends over a simulated link (small MTU,
 packet reordering) and is what the end-to-end test uses.

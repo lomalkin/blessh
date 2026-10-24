@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prints DEB_VERSION and DEB_REVISION for $GITHUB_ENV.
+# Prints DEB_VERSION (with Debian revision) for $GITHUB_ENV.
 # Tag builds (vX.Y.Z) are releases: X.Y.Z-1; the tag must match Cargo.toml.
 # Other builds are X.Y.Z~ciN-1, which sorts before the X.Y.Z release.
 set -eu
@@ -9,8 +9,7 @@ if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
         echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $ver" >&2
         exit 1
     fi
-    echo "DEB_VERSION=$ver"
+    echo "DEB_VERSION=$ver-1"
 else
-    echo "DEB_VERSION=$ver~ci${GITHUB_RUN_NUMBER:-0}"
+    echo "DEB_VERSION=$ver~ci${GITHUB_RUN_NUMBER:-0}-1"
 fi
-echo "DEB_REVISION=1"
