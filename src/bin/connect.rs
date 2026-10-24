@@ -92,7 +92,8 @@ async fn find(adapter: &Adapter, args: &Args) -> bluer::Result<Option<Device>> {
     tokio::pin!(deadline);
     // Advertised UUIDs and names can arrive after DeviceAdded, so devices
     // are re-checked until they match or the scan ends.
-    let mut candidates: Vec<Address> = Vec::new();
+    // Devices BlueZ already knows produce no DeviceAdded event.
+    let mut candidates: Vec<Address> = adapter.device_addresses().await?;
     let mut listed: HashSet<Address> = HashSet::new();
     let mut recheck = tokio::time::interval(Duration::from_millis(500));
     loop {
