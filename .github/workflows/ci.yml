@@ -57,48 +57,104 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Install cargo-deb
         run: cargo install cargo-deb --locked
+      - name: Package version
+        run: ci/deb-version.sh >> "$GITHUB_ENV"
       - name: Build package
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
         run: |
-          cargo deb --target ${{ matrix.target }} --deb-revision "${GITHUB_RUN_NUMBER}"
-          ls -l target/${{ matrix.target }}/debian/
+          cargo deb --target ${{ matrix.target }} --deb-version "$DEB_VERSION" --deb-revision "$DEB_REVISION"
+          dpkg-deb -f target/${{ matrix.target }}/debian/*.deb Package Version Architecture
       - uses: actions/upload-artifact@v4
         with:
           name: ble-term-${{ matrix.target }}
           path: target/${{ matrix.target }}/debian/*.deb
 
   # 32-bit Raspberry Pi OS. The ARMv6 target covers every Pi including
-  # Pi Zero (W) and Pi 1; Debian's armhf cross toolchain is ARMv7-only, so
-  # this uses the cross-rs image with an ARMv6 toolchain and sysroot.
+  # Pi Zero (W) and Pi 1. Debian's armhf cross toolchain is ARMv7-only and
+  # the cross-rs images ship a glibc too old for current Rust std, so this
+  # links with zig against glibc 2.31 (Bullseye and later) and runs the unit
+  # tests on an emulated ARM1176 with Raspbian's ARMv6 libc.
   deb-armhf:
     runs-on: ubuntu-latest
     env:
       TARGET: arm-unknown-linux-gnueabihf
+      GLIBC: '2.31'
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust tools
+      - name: Install tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user
+          pip install ziglang
           rustup target add "$TARGET"
-          cargo install cross --locked --version 0.2.5
-          cargo install cargo-deb --locked
+          cargo install cargo-zigbuild cargo-deb --locked
+      - name: Raspbian libc for the emulator
+        run: |
+          base=http://raspbian.raspberrypi.com/raspbian
+          deb=$(curl -sSf "$base/dists/bookworm/main/binary-armhf/Packages.xz" | xz -d |
+            awk '/^Package: libc6$/ {p=1} p && /^Filename:/ {print $2; exit}')
+          curl -sSfo libc6.deb "$base/$deb"
+          mkdir -p sysroot && dpkg-deb -x libc6.deb sysroot
+          echo "QEMU_LD_PREFIX=$PWD/sysroot" >> "$GITHUB_ENV"
       - name: Unit tests on an emulated ARMv6 CPU (ARM1176, as in Pi Zero / Pi 1)
         env:
           QEMU_CPU: arm1176
-        run: cross test --target "$TARGET" --lib
+        run: |
+          tests=$(cargo zigbuild --lib --tests --target "$TARGET.$GLIBC" --message-format=json |
+            jq -r 'select(.profile.test == true) | .executable // empty')
+          for t in $tests; do qemu-arm "$t"; done
       - name: Build
-        run: cross build --release --target "$TARGET" --bins
-      - name: Check that the binaries are ARMv6
+        run: cargo zigbuild --release --target "$TARGET.$GLIBC" --bins
+      - name: Check that the binaries are ARMv6 and run on an ARM1176
+        env:
+          QEMU_CPU: arm1176
         run: |
           for b in ble-term-daemon ble-term-session ble-term-connect; do
-            readelf -A "target/$TARGET/release/$b" | tee /dev/stderr | grep -q 'Tag_CPU_arch: v6$'
+            f=target/$TARGET/release/$b
+            readelf -A "$f" | grep 'Tag_CPU_arch:'
+            readelf -A "$f" | grep -q 'Tag_CPU_arch: v6$'
+            qemu-arm "$f" --version
           done
+      - name: Package version
+        run: ci/deb-version.sh >> "$GITHUB_ENV"
       - name: Build package
         run: |
-          cargo deb --target "$TARGET" --no-build --deb-revision "${GITHUB_RUN_NUMBER}"
-          ls -l target/$TARGET/debian/
+          cargo deb --target "$TARGET" --no-build --deb-version "$DEB_VERSION" --deb-revision "$DEB_REVISION"
+          dpkg-deb -f target/$TARGET/debian/*.deb Package Version Architecture
       - uses: actions/upload-artifact@v4
         with:
           name: ble-term-${{ env.TARGET }}
           path: target/${{ env.TARGET }}/debian/*.deb
+
+  # A tag vX.Y.Z publishes a GitHub release with the packages, SHA256SUMS and
+  # the commit subjects since the previous tag.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [test, deb, deb-armhf]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ble-term-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums and notes
+        run: |
+          cd dist
+          sha256sum *.deb > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME" > notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "ble-term ${GITHUB_REF_NAME#v}" --notes-file notes.md
