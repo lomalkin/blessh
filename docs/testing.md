@@ -1,7 +1,7 @@
 # Testing ble-term on real hardware
 
 This is the procedure for checking a server device (and a client) for
-[HARDWARE.md](HARDWARE.md). Run the cases that apply, then add a row there
+[hardware.md](hardware.md). Run the cases that apply, then add a row there
 with the result of each case: `pass`, `fail` (with a link to the issue or a
 note), or `—` (not run).
 

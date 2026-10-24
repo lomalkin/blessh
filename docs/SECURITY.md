@@ -4,6 +4,16 @@ Threat model, security controls and the results of the security review of
 the ble-term server. Findings are numbered (S-n) and keep their number when
 their status changes.
 
+## Reporting a vulnerability
+
+Do not report vulnerabilities in public issues. Use GitHub's private
+vulnerability reporting (Security tab, "Report a vulnerability") or a draft
+security advisory; while the repository is private, contact the
+maintainers directly. Include the affected version (`dpkg -s ble-term`),
+the BlueZ and OS versions, and steps to reproduce. Fixes go into the next
+release; only the latest release is supported. Vulnerabilities of the
+Android client belong to the client's repository.
+
 ## Threat model
 
 The server advertises a GATT service without pairing. Anyone within radio

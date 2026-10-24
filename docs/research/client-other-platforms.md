@@ -8,7 +8,7 @@ there as unverified need a hardware test before they are relied on.
 
 ## What every client must do
 
-The normative rules are in [PROTOCOL.md](../PROTOCOL.md); the points that
+The normative rules are in [protocol.md](../protocol.md); the points that
 differ between platforms:
 
 * **Discovery.** Scan for the service UUID `5b1e7e00-…`; it is in the

@@ -1,7 +1,7 @@
 # Verified hardware
 
 Server devices and clients on which ble-term was tested with the procedure
-in [TESTING.md](TESTING.md). Case IDs refer to that file: `pass`, `fail`,
+in [testing.md](testing.md). Case IDs refer to that file: `pass`, `fail`,
 `—` = not run. Add a row for every new device, OS release or major BlueZ
 version.
 

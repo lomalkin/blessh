@@ -3,7 +3,7 @@
 SSH sessions over Bluetooth Low Energy for Linux (BlueZ). Reference
 platform: Raspberry Pi with Raspberry Pi OS / Debian Bookworm or Trixie
 (64-bit `arm64` and 32-bit `armhf` packages). Tested devices:
-[docs/HARDWARE.md](docs/HARDWARE.md).
+[docs/hardware.md](docs/hardware.md).
 
 ```
 phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──▶ ble-term-daemon (_bleterm)
@@ -28,9 +28,9 @@ phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──
   session receives SIGHUP, exactly like a dropped network SSH connection.
 * One client at a time (v1).
 
-Wire protocol: [docs/PROTOCOL.md](docs/PROTOCOL.md); what must stay
-compatible with installed clients: [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
-Test procedure: [docs/TESTING.md](docs/TESTING.md). Repository conventions:
+Wire protocol: [docs/protocol.md](docs/protocol.md); what must stay
+compatible with installed clients: [docs/compatibility.md](docs/compatibility.md).
+Test procedure: [docs/testing.md](docs/testing.md). Repository conventions:
 [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Install

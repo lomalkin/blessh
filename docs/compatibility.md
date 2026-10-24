@@ -3,7 +3,7 @@
 Installed ConnectBot BLE builds (and later iOS or desktop clients) must keep
 working with any newer ble-term server, and the other way round. Until a v2
 is deliberately introduced, the following is frozen. The normative
-description is [PROTOCOL.md](PROTOCOL.md).
+description is [protocol.md](protocol.md).
 
 ## Frozen
 
@@ -17,7 +17,7 @@ description is [PROTOCOL.md](PROTOCOL.md).
   reorder window of 64 (a tolerance; v1 assumes a single ATT bearer), frame
   size min(ATT_MTU − 3, 500), one frame per ATT PDU with either write type
   on RX. The test vectors
-  in PROTOCOL.md stay valid and are checked by both the Rust tests and
+  in protocol.md stay valid and are checked by both the Rust tests and
   `BleStreamLinkTest` in the client.
 * **Handshake:** HELLO with magic `BLTM` and version 1. Either side may send
   HELLO first; neither sends DATA before the peer's HELLO.

@@ -65,7 +65,7 @@ bearer it does not happen.
 
 HELLO flags are sent as 0 and receivers ignore unknown bits; receivers also
 ignore bytes after the window field. Both are reserved for compatible
-extensions, see [COMPATIBILITY.md](COMPATIBILITY.md).
+extensions, see [compatibility.md](compatibility.md).
 
 CLOSE reasons: 0 normal, 1 busy (another client is connected), 2 protocol
 error, 3 session unavailable (server could not start sshd), 4 timeout.

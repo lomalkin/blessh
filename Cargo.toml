@@ -87,8 +87,8 @@ assets = [
     ["packaging/tmpfiles.conf", "usr/lib/tmpfiles.d/ble-term.conf", "644"],
     ["packaging/dbus.conf", "usr/share/dbus-1/system.d/ble-term.conf", "644"],
     ["README.md", "usr/share/doc/ble-term/", "644"],
-    ["docs/PROTOCOL.md", "usr/share/doc/ble-term/", "644"],
-    ["docs/TESTING.md", "usr/share/doc/ble-term/", "644"],
+    ["docs/protocol.md", "usr/share/doc/ble-term/", "644"],
+    ["docs/testing.md", "usr/share/doc/ble-term/", "644"],
 ]
 
 [lints.rust]
