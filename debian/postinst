@@ -21,6 +21,29 @@ eatt_hint() {
     echo "      sudo systemctl restart bluetooth"
 }
 
+# BlueZ before 5.69 shares the Acquire* sockets of a characteristic between
+# all connected devices, and before 5.76 sends notifications to every
+# subscribed device: another device nearby can break an active session or
+# watch its encrypted traffic (docs/SECURITY.md, S-2).
+shared_socket_hint() {
+    v=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null) || return 0
+    dpkg --compare-versions "$v" lt 5.76 || return 0
+    echo "ble-term: with BlueZ $v other Bluetooth LE devices nearby can disconnect an active"
+    echo "  session or observe its encrypted traffic and keystroke timing. BlueZ 5.76 or"
+    echo "  later (e.g. Debian trixie) fixes this."
+}
+
+# Printed on first installation only.
+usage_hint() {
+    echo "ble-term: BLE logins are possible while both units run:"
+    echo "  stop until next boot:  sudo systemctl stop ble-term.service"
+    echo "  start again:           sudo systemctl start ble-term.service"
+    echo "  off permanently:       sudo systemctl disable --now ble-term.service ble-term-session.socket"
+    echo "  on again:              sudo systemctl enable --now ble-term-session.socket ble-term.service"
+    echo "  The server advertises the host name; set another one with BLE_TERM_ARGS=\"--name ...\""
+    echo "  in /etc/default/ble-term and restart ble-term.service."
+}
+
 # Explains why Bluetooth is unusable, if it is. The package does not change
 # the rfkill state itself: a block is often deliberate.
 bluetooth_hint() {
@@ -63,6 +86,10 @@ if [ "$1" = configure ]; then
     ssh-keygen -l -f "$KEY.pub" | sed 's/^/  /'
     bluetooth_hint
     eatt_hint
+    shared_socket_hint
+    if [ -z "$2" ]; then
+        usage_hint
+    fi
 fi
 
 exit 0

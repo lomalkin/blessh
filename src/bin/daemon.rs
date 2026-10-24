@@ -41,7 +41,7 @@ struct Args {
     #[arg(long, default_value = "/run/ble-term/session.sock")]
     session_socket: PathBuf,
     /// Seconds a client may take to complete the BleStream handshake.
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 10)]
     handshake_timeout: u64,
     /// Receive window granted to the client, in bytes.
     #[arg(long, default_value_t = 16384)]

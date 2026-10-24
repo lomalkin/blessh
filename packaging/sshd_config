@@ -14,8 +14,15 @@ PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
 PermitRootLogin no
 PermitEmptyPasswords no
-MaxAuthTries 4
-LoginGraceTime 120
+MaxAuthTries 3
+# Covers key exchange, comparing the host key fingerprint on first connect
+# and typing a password on a phone; also bounds how long an unauthenticated
+# client holds the single BLE session slot.
+LoginGraceTime 60
+# Anyone in radio range can try passwords. For keys only, set
+# PasswordAuthentication and KbdInteractiveAuthentication above to no (sshd
+# uses the first value it reads). To limit BLE logins to one group:
+#AllowGroups ble-term
 
 # BLE is slow: skip what is not needed for an interactive terminal.
 PrintMotd no

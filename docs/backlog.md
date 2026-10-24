@@ -14,7 +14,7 @@ Ideas worth doing, not scheduled yet.
   private addresses that change every few minutes, so the BLE address is a
   weak identity for rate limiting and for the audit log.
 * **Slot capture.** v1 serves one client; a stranger can keep the slot busy
-  (20 s handshake timeout, then up to sshd's `LoginGraceTime` before
-  authentication). Options: a shorter pre-authentication limit, letting a
-  new client pre-empt one that has not authenticated, logging repeated
-  attempts.
+  (10 s handshake timeout, then up to sshd's `LoginGraceTime`, 60 s, before
+  authentication). Options: several sessions at once (needs BlueZ ≥ 5.69,
+  which keeps a socket per device), letting a new client pre-empt one that
+  has not authenticated, logging repeated attempts.

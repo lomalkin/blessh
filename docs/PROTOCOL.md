@@ -64,7 +64,7 @@ error, 3 session unavailable (server could not start sshd), 4 timeout.
    connection. A BLE disconnect without CLOSE ends the session as well; the
    server never resumes a session on a new connection.
 
-The server allows the handshake 20 s (default) after the client starts using
+The server allows the handshake 10 s (default) after the client starts using
 the characteristics.
 
 ## Flow control

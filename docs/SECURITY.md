@@ -35,7 +35,7 @@ the phone.
 | `ble-term-daemon` | `_bleterm`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7) | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
 | `/run/ble-term/session.sock` | socket `0600 _bleterm` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
 | `ble-term-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
-| `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH; no root login, `MaxAuthTries 4`, `LoginGraceTime 120`, no forwarding of any kind, no compression |
+| `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH; no root login, `MaxAuthTries 3`, `LoginGraceTime 60`, no forwarding of any kind, no compression |
 
 The BLE SSH host key is `0600 root`; the daemon cannot read it.
 
@@ -44,13 +44,13 @@ The BLE SSH host key is `0600 root`; the daemon cannot read it.
 | ID | Severity | Status | Summary |
 |---|---|---|---|
 | S-1 | Medium | Fixed (0.1.3) | Journal entries could be forged through CLOSE messages |
-| S-2 | Medium | Open (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
-| S-3 | Medium | Open (backlog) | One client can occupy the only session slot |
-| S-4 | Medium | Open (backlog) | Password guessing over BLE is not rate limited by source |
+| S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
+| S-3 | Medium | Mitigated (0.1.3), rest in backlog | One client can occupy the only session slot |
+| S-4 | Medium | Mitigated (0.1.3), rest in backlog | Password guessing over BLE is not rate limited by source |
 | S-5 | Low | Open (hardening) | A compromised daemon controls all of BlueZ over D-Bus |
 | S-6 | Low | Fixed (0.1.3) | Unix socket forwarding was allowed |
-| S-7 | Info | Documented | The host name is broadcast |
-| S-8 | Info | Documented | BLE addresses in the audit log are weak identities |
+| S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
+| S-8 | Info | Accepted | BLE addresses in the audit log are weak identities |
 | S-9 | Info | Accepted | The daemon is trusted for the audit fields it passes on |
 | S-10 | Info | Fixed (0.1.3) | Integer overflow in `ble-term-session --timeout` |
 
@@ -90,25 +90,29 @@ does not call Acquire* for it.
 Affected: Bookworm (5.66). Not affected: Trixie (5.82). No CVE was found
 for the upstream fixes, which went in as ordinary bug fixes; Debian
 bookworm's bluez 5.66-1+deb12u2 does not carry them.
-Options: recommend BlueZ ≥ 5.76; optionally, on older BlueZ, disconnect
-other unpaired LE devices while a session is active (would also affect
-unrelated BLE devices, so opt-in); re-enable keystroke timing obfuscation
-in the client. Decision pending.
+Decision: BlueZ ≥ 5.76 is recommended (README) and the installer warns on
+older versions. Not done: disconnecting other LE devices during a session
+(it would also cut unrelated devices) and keystroke timing obfuscation in
+the client (it costs bandwidth on a slow link); the exposure is accepted
+with this documentation.
 
 ### S-3 Session slot occupation
 
-v1 serves one client. A nearby device can keep the slot: up to 20 s for
+v1 serves one client. A nearby device can keep the slot: up to 10 s for
 the BleStream handshake (5 s if it opens only one characteristic), then up
-to `LoginGraceTime` (120 s) before authenticating, and repeat. See
-backlog.md.
+to `LoginGraceTime` (60 s) before authenticating, and repeat. 0.1.3 halves
+both limits (they were 20 s and 120 s); several sessions at once and other
+options are in backlog.md.
 
 ### S-4 Password guessing
 
 sshd sees no source address for BLE sessions, so per-source penalties do
-not apply. `MaxAuthTries 4` per connection and PAM (e.g. `pam_faillock`, if
-configured) are the only limits. BLE addresses of phones rotate, so a
-per-address limit in the daemon is weak. See backlog.md (public keys only,
-`AllowGroups`).
+not apply. `MaxAuthTries 3` per connection (4 before 0.1.3), the session
+slot (one connection at a time, `LoginGraceTime` 60 s) and PAM (e.g.
+`pam_faillock`, if configured) are the limits. BLE addresses of phones
+rotate, so a per-address limit in the daemon is weak. The README
+recommends public keys only and `AllowGroups`, and `sshd_config` explains
+how; a default group and a session rate limit are in backlog.md.
 
 ### S-5 D-Bus access of the daemon
 
@@ -132,13 +136,17 @@ yes`.
 
 The advertisement and the INFO characteristic contain the host name, which
 anyone nearby can read. Use `--name` in `/etc/default/ble-term` to
-advertise something else.
+advertise something else; the installer says so on first installation.
 
 ### S-8 Weak identities in the audit log
 
 Phones use resolvable private addresses that change every few minutes; the
 logged address identifies a connection, not a phone. The SSH login (user,
 key fingerprint) logged by sshd in the same unit is the reliable part.
+Accepted: identity rests on SSH (the pinned host key, whose fingerprint
+the user compares on first connect, and user authentication). Pairing with
+identity resolving keys would give stable phone identities and is left for
+a later protocol version.
 
 ### S-9 Audit fields from the daemon
 
@@ -159,5 +167,8 @@ from the radio). Fixed with saturating arithmetic.
 | Code review | daemon, bridge, link, protocol, session wrapper, units, `sshd_config` | findings above |
 | Fuzzing (`tests/fuzz`) | frame decoding, link state machine, link pairs, bridge, preamble | no crashes in our code |
 | AddressSanitizer, LeakSanitizer | unit tests; loopback end-to-end test (300 KB each way, reordering, session socket) | clean |
+| Miri | library unit tests without BlueZ (`cargo miri test --lib --no-default-features`) | 12 of 13 tests clean; `sequence_wraps` (70 000 frames) takes hours under Miri and runs separately |
+| Kani | `link::proofs`: frame decoding, link invariants over packet sequences, credit and frame size limits | pending |
 | `cargo audit` | main crate and fuzz crate lock files | no advisories |
+| `cargo deny` | licences, advisories, sources, yanked crates (`deny.toml`) | ok; one duplicate crate version warning |
 | Sandbox of the running daemon | target bench (Trixie) | as in the table above |

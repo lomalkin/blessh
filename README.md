@@ -64,7 +64,10 @@ address identifies a connection rather than a phone.
 Upgrades restart the daemon, which ends an active BLE session; the client
 has to reconnect.
 
-Disable: `sudo systemctl disable --now ble-term.service ble-term-session.socket`.
+BLE logins are possible while `ble-term.service` and
+`ble-term-session.socket` run. Stop until the next boot:
+`sudo systemctl stop ble-term.service`. Disable:
+`sudo systemctl disable --now ble-term.service ble-term-session.socket`.
 Remove: `sudo apt purge ble-term`.
 
 Requirements: BlueZ ≥ 5.55 (tested design targets 5.66 and 5.82), OpenSSH
@@ -72,6 +75,24 @@ server package (only the `sshd` binary is used), systemd. The Bluetooth adapter
 must be on; the daemon waits for it and logs what to do if it is blocked by
 rfkill (`sudo rfkill unblock bluetooth`) or powered off
 (`bluetoothctl power on`). The package does not change the rfkill state.
+
+## Security
+
+Anyone within Bluetooth range can connect to the server and try to log in;
+the BLE link is neither paired nor encrypted, and SSH provides
+authentication and encryption. Recommended:
+
+* Compare the host key fingerprint on the first connection.
+* Use public keys and turn passwords off: set `PasswordAuthentication no`
+  and `KbdInteractiveAuthentication no` in `/etc/ble-term/sshd_config`. If
+  passwords stay on, use strong ones; sshd cannot rate-limit BLE clients by
+  source.
+* Limit who may log in over BLE with `AllowGroups` in the same file.
+* Use BlueZ 5.76 or later (Debian trixie). With older BlueZ, other BLE
+  devices nearby can break an active session or observe its encrypted
+  traffic and keystroke timing; the installer warns about this.
+
+Threat model, findings and checks: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Bookworm (BlueZ 5.66): pairing request and dropped connections
 
