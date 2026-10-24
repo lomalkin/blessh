@@ -1,0 +1,124 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git \
+            openssh-client openssh-server
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: End-to-end (ssh <-> simulated BLE <-> sshd -i)
+        run: |
+          mkdir -p /run/sshd
+          cargo build
+          tests/e2e-loopback.sh target/debug/ble-term-loopback
+
+  deb:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            gcc: gcc-aarch64-linux-gnu
+            cc: aarch64-linux-gnu-gcc
+          - target: x86_64-unknown-linux-gnu
+            gcc: gcc
+            cc: gcc
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git ${{ matrix.gcc }}
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Build package
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: |
+          cargo deb --target ${{ matrix.target }} --deb-revision "${GITHUB_RUN_NUMBER}"
+          ls -l target/${{ matrix.target }}/debian/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ble-term-${{ matrix.target }}
+          path: target/${{ matrix.target }}/debian/*.deb
+
+  bluez-vhci:
+    # Real BlueZ GATT path: two virtual controllers (btvirt) under one
+    # bluetoothd; the daemon serves on one, ble-term-connect uses the other.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        bluez: ["5.66", "5.82"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libglib2.0-dev libdbus-1-dev \
+            libudev-dev libical-dev libreadline-dev python3-docutils pkg-config autoconf automake libtool \
+            openssh-client openssh-server "linux-modules-extra-$(uname -r)" || true
+      - name: Load hci_vhci
+        run: |
+          sudo modprobe hci_vhci
+          ls -l /dev/vhci
+      - name: Build BlueZ ${{ matrix.bluez }}
+        run: |
+          curl -sSfL "https://www.kernel.org/pub/linux/bluetooth/bluez-${{ matrix.bluez }}.tar.xz" | tar xJ
+          cd "bluez-${{ matrix.bluez }}"
+          ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --enable-testing --enable-experimental \
+            --disable-cups --disable-obex --disable-manpages --disable-a2dp --disable-avrcp --disable-network \
+            --disable-hid --disable-hog --disable-midi --disable-mesh --disable-systemd
+          make -j"$(nproc)" src/bluetoothd emulator/btvirt tools/btmgmt client/bluetoothctl
+          echo "BLUEZ_DIR=$PWD" >> "$GITHUB_ENV"
+      - name: Start bluetoothd with two virtual controllers
+        run: |
+          sudo systemctl stop bluetooth || true
+          sudo install -m 644 "$BLUEZ_DIR/src/bluetooth.conf" /etc/dbus-1/system.d/bluetooth.conf
+          sudo systemctl reload dbus
+          sudo "$BLUEZ_DIR/emulator/btvirt" -L -l2 > btvirt.log 2>&1 &
+          sleep 2
+          sudo "$BLUEZ_DIR/src/bluetoothd" -n -d -f /dev/null > bluetoothd.log 2>&1 &
+          sleep 3
+          sudo "$BLUEZ_DIR/tools/btmgmt" --index 0 power on
+          sudo "$BLUEZ_DIR/tools/btmgmt" --index 1 power on
+          "$BLUEZ_DIR/client/bluetoothctl" list
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build
+      - name: GATT end-to-end over virtual controllers
+        run: tests/e2e-vhci.sh
+      - name: Logs
+        if: always()
+        run: |
+          tail -n 200 bluetoothd.log || true
+          tail -n 50 btvirt.log || true
+          cat /tmp/ble-term-vhci/*.log || true

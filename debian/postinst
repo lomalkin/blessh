@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+KEY=/etc/ble-term/ssh_host_ed25519_key
+
+if [ "$1" = configure ]; then
+    systemd-sysusers ble-term.conf
+    systemd-tmpfiles --create ble-term.conf || true
+    if [ ! -f "$KEY" ]; then
+        ssh-keygen -q -t ed25519 -N '' -C "ble-term@$(hostname)" -f "$KEY"
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable ble-term-session.socket ble-term.service >/dev/null
+        systemctl restart ble-term-session.socket
+        if systemctl -q is-active bluetooth.service; then
+            systemctl restart ble-term.service
+        fi
+    fi
+    echo "ble-term: BLE SSH host key fingerprint:"
+    ssh-keygen -l -f "$KEY.pub" | sed 's/^/  /'
+fi
+
+exit 0

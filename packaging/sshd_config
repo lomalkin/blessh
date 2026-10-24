@@ -1,0 +1,32 @@
+# sshd configuration used only for SSH sessions over Bluetooth LE.
+# Each BLE client gets its own `sshd -i -f /etc/ble-term/sshd_config` from
+# ble-term-session@.service; the network SSH server (ssh.service) and its
+# /etc/ssh/sshd_config are not involved.
+
+HostKey /etc/ble-term/ssh_host_ed25519_key
+
+# Standard system authentication through PAM (passwords, pam_faillock, ...)
+# plus public keys from ~/.ssh/authorized_keys.
+UsePAM yes
+KbdInteractiveAuthentication yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
+PermitRootLogin no
+PermitEmptyPasswords no
+MaxAuthTries 4
+LoginGraceTime 120
+
+# BLE is slow: skip what is not needed for an interactive terminal.
+PrintMotd no
+Compression no
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PermitTunnel no
+AcceptEnv LANG LC_* COLORTERM
+
+ClientAliveInterval 0
+SyslogFacility AUTH
+LogLevel INFO
+Subsystem sftp internal-sftp

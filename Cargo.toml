@@ -1,0 +1,78 @@
+[package]
+name = "ble-term"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "SSH sessions over Bluetooth Low Energy for Linux/BlueZ"
+license = "BSD-2-Clause"
+publish = false
+
+[lib]
+name = "ble_term"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ble-term-daemon"
+path = "src/bin/daemon.rs"
+
+[[bin]]
+name = "ble-term-connect"
+path = "src/bin/connect.rs"
+
+[[bin]]
+name = "ble-term-loopback"
+path = "src/bin/loopback.rs"
+
+[dependencies]
+bluer = { version = "0.17.4", features = ["bluetoothd"] }
+# Build libdbus from source so the binaries need neither libdbus-1-dev at build
+# time nor a matching libdbus at run time (simplifies cross-compilation).
+libdbus-sys = { version = "0.2.7", features = ["vendored"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "io-std", "time", "signal", "process", "sync", "fs"] }
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+uuid = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[package.metadata.deb]
+name = "ble-term"
+maintainer = "Aluminique"
+copyright = "2026, Aluminique"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+ble-term exposes an SSH server over Bluetooth Low Energy. A small unprivileged \
+daemon registers a GATT service with BlueZ over D-Bus and forwards each BLE \
+connection to a per-connection `sshd -i` started by systemd socket activation. \
+No changes to the BlueZ configuration are made and the adapter is not taken \
+over, so other Bluetooth services keep working."""
+depends = "bluez (>= 5.55), openssh-server, systemd"
+section = "net"
+priority = "optional"
+maintainer-scripts = "debian/"
+conf-files = ["/etc/ble-term/sshd_config", "/etc/default/ble-term"]
+assets = [
+    ["target/release/ble-term-daemon", "usr/sbin/", "755"],
+    ["target/release/ble-term-connect", "usr/bin/", "755"],
+    ["packaging/sshd_config", "etc/ble-term/sshd_config", "644"],
+    ["packaging/default", "etc/default/ble-term", "644"],
+    ["packaging/systemd/ble-term.service", "lib/systemd/system/", "644"],
+    ["packaging/systemd/ble-term-session.socket", "lib/systemd/system/", "644"],
+    ["packaging/systemd/ble-term-session@.service", "lib/systemd/system/", "644"],
+    ["packaging/sysusers.conf", "usr/lib/sysusers.d/ble-term.conf", "644"],
+    ["packaging/tmpfiles.conf", "usr/lib/tmpfiles.d/ble-term.conf", "644"],
+    ["README.md", "usr/share/doc/ble-term/", "644"],
+    ["docs/PROTOCOL.md", "usr/share/doc/ble-term/", "644"],
+    ["docs/TESTING.md", "usr/share/doc/ble-term/", "644"],
+]

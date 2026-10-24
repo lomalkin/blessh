@@ -1,0 +1,5 @@
+# Extra arguments for ble-term-daemon, see `ble-term-daemon --help`.
+# Examples:
+#   BLE_TERM_ARGS="--name my-pi"
+#   BLE_TERM_ARGS="--adapter hci1"
+BLE_TERM_ARGS=""

@@ -1,0 +1,242 @@
+//! BleStream v1 wire format. See `docs/PROTOCOL.md` for the normative description.
+
+use uuid::Uuid;
+
+/// Primary GATT service exposed by the server.
+pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x5b1e7e00_6d2c_4f4a_9a3e_2c1b0e8f4a10);
+/// Read-only server information (`key=value` pairs separated by `;`).
+pub const INFO_UUID: Uuid = Uuid::from_u128(0x5b1e7e01_6d2c_4f4a_9a3e_2c1b0e8f4a10);
+/// Client to server stream (write / write-without-response).
+pub const RX_UUID: Uuid = Uuid::from_u128(0x5b1e7e02_6d2c_4f4a_9a3e_2c1b0e8f4a10);
+/// Server to client stream (notify).
+pub const TX_UUID: Uuid = Uuid::from_u128(0x5b1e7e03_6d2c_4f4a_9a3e_2c1b0e8f4a10);
+
+pub const VERSION: u8 = 1;
+pub const MAGIC: [u8; 4] = *b"BLTM";
+
+/// Frame header: type (1 byte) + sequence number (u16 little endian).
+pub const HEADER_LEN: usize = 3;
+/// Smallest usable frame size (ATT MTU 23 minus the 3 byte ATT header).
+pub const MIN_FRAME: usize = 20;
+/// Largest value a single ATT write or notification may carry.
+pub const MAX_FRAME: usize = 512;
+
+pub const T_HELLO: u8 = 0x01;
+pub const T_DATA: u8 = 0x02;
+pub const T_CREDIT: u8 = 0x03;
+pub const T_CLOSE: u8 = 0x04;
+
+const HELLO_LEN: usize = 10;
+
+/// Reason codes carried by CLOSE frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CloseReason {
+    Normal = 0,
+    Busy = 1,
+    ProtocolError = 2,
+    SessionUnavailable = 3,
+    Timeout = 4,
+}
+
+impl CloseReason {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Normal,
+            1 => Self::Busy,
+            2 => Self::ProtocolError,
+            3 => Self::SessionUnavailable,
+            4 => Self::Timeout,
+            _ => Self::ProtocolError,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Frame {
+    Hello {
+        version: u8,
+        flags: u8,
+        window: u32,
+    },
+    Data(Vec<u8>),
+    Credit(u32),
+    Close {
+        reason: CloseReason,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeError {
+    TooShort,
+    UnknownType(u8),
+    BadHello,
+    BadCredit,
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooShort => write!(f, "frame shorter than header"),
+            Self::UnknownType(t) => write!(f, "unknown frame type 0x{t:02x}"),
+            Self::BadHello => write!(f, "malformed HELLO"),
+            Self::BadCredit => write!(f, "malformed CREDIT"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+impl Frame {
+    pub fn encode(&self, seq: u16) -> Vec<u8> {
+        let mut out = Vec::with_capacity(HEADER_LEN + self.payload_len());
+        let ty = match self {
+            Frame::Hello { .. } => T_HELLO,
+            Frame::Data(_) => T_DATA,
+            Frame::Credit(_) => T_CREDIT,
+            Frame::Close { .. } => T_CLOSE,
+        };
+        out.push(ty);
+        out.extend_from_slice(&seq.to_le_bytes());
+        match self {
+            Frame::Hello {
+                version,
+                flags,
+                window,
+            } => {
+                out.extend_from_slice(&MAGIC);
+                out.push(*version);
+                out.push(*flags);
+                out.extend_from_slice(&window.to_le_bytes());
+            }
+            Frame::Data(d) => out.extend_from_slice(d),
+            Frame::Credit(n) => out.extend_from_slice(&n.to_le_bytes()),
+            Frame::Close { reason, message } => {
+                out.push(*reason as u8);
+                out.extend_from_slice(message.as_bytes());
+            }
+        }
+        out
+    }
+
+    fn payload_len(&self) -> usize {
+        match self {
+            Frame::Hello { .. } => HELLO_LEN,
+            Frame::Data(d) => d.len(),
+            Frame::Credit(_) => 4,
+            Frame::Close { message, .. } => 1 + message.len(),
+        }
+    }
+
+    /// Decodes a frame, returning its sequence number and contents.
+    pub fn decode(pkt: &[u8]) -> Result<(u16, Frame), DecodeError> {
+        if pkt.len() < HEADER_LEN {
+            return Err(DecodeError::TooShort);
+        }
+        let seq = u16::from_le_bytes([pkt[1], pkt[2]]);
+        let p = &pkt[HEADER_LEN..];
+        let frame = match pkt[0] {
+            T_HELLO => {
+                if p.len() < HELLO_LEN || p[..4] != MAGIC {
+                    return Err(DecodeError::BadHello);
+                }
+                Frame::Hello {
+                    version: p[4],
+                    flags: p[5],
+                    window: u32::from_le_bytes([p[6], p[7], p[8], p[9]]),
+                }
+            }
+            T_DATA => Frame::Data(p.to_vec()),
+            T_CREDIT => {
+                if p.len() != 4 {
+                    return Err(DecodeError::BadCredit);
+                }
+                Frame::Credit(u32::from_le_bytes([p[0], p[1], p[2], p[3]]))
+            }
+            T_CLOSE => {
+                let reason = p
+                    .first()
+                    .map(|r| CloseReason::from_u8(*r))
+                    .unwrap_or(CloseReason::Normal);
+                let message = p
+                    .get(1..)
+                    .map(|m| String::from_utf8_lossy(m).into_owned())
+                    .unwrap_or_default();
+                Frame::Close { reason, message }
+            }
+            t => return Err(DecodeError::UnknownType(t)),
+        };
+        Ok((seq, frame))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip() {
+        let frames = [
+            Frame::Hello {
+                version: 1,
+                flags: 0,
+                window: 16384,
+            },
+            Frame::Data(b"hello".to_vec()),
+            Frame::Data(Vec::new()),
+            Frame::Credit(4096),
+            Frame::Close {
+                reason: CloseReason::Busy,
+                message: "busy".into(),
+            },
+        ];
+        for (i, f) in frames.iter().enumerate() {
+            let enc = f.encode(i as u16 * 1000);
+            let (seq, dec) = Frame::decode(&enc).unwrap();
+            assert_eq!(seq, i as u16 * 1000);
+            assert_eq!(&dec, f);
+        }
+    }
+
+    #[test]
+    fn test_vectors() {
+        // Shared with the Android implementation (BleStreamTest.kt).
+        assert_eq!(
+            Frame::Hello {
+                version: 1,
+                flags: 0,
+                window: 0x4000
+            }
+            .encode(0),
+            [0x01, 0x00, 0x00, b'B', b'L', b'T', b'M', 0x01, 0x00, 0x00, 0x40, 0x00, 0x00]
+        );
+        assert_eq!(
+            Frame::Data(vec![0x61, 0x62]).encode(0x0102),
+            [0x02, 0x02, 0x01, 0x61, 0x62]
+        );
+        assert_eq!(
+            Frame::Credit(0x01020304).encode(7),
+            [0x03, 0x07, 0x00, 0x04, 0x03, 0x02, 0x01]
+        );
+        assert_eq!(
+            Frame::Close {
+                reason: CloseReason::Normal,
+                message: "ok".into()
+            }
+            .encode(9),
+            [0x04, 0x09, 0x00, 0x00, b'o', b'k']
+        );
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert_eq!(Frame::decode(&[1, 2]), Err(DecodeError::TooShort));
+        assert_eq!(Frame::decode(&[9, 0, 0]), Err(DecodeError::UnknownType(9)));
+        assert_eq!(
+            Frame::decode(&[1, 0, 0, b'X', b'L', b'T', b'M', 1, 0, 0, 0, 0, 0]),
+            Err(DecodeError::BadHello)
+        );
+        assert_eq!(Frame::decode(&[3, 0, 0, 1]), Err(DecodeError::BadCredit));
+    }
+}

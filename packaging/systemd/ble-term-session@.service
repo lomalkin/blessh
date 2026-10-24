@@ -1,0 +1,11 @@
+[Unit]
+Description=ble-term SSH session
+Documentation=file:///usr/share/doc/ble-term/README.md
+# Independent of ssh.service: the network SSH server may stay disabled.
+ConditionPathExists=/etc/ble-term/ssh_host_ed25519_key
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i -f /etc/ble-term/sshd_config
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

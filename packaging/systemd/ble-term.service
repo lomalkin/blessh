@@ -1,0 +1,42 @@
+[Unit]
+Description=SSH over Bluetooth LE (ble-term GATT server)
+Documentation=file:///usr/share/doc/ble-term/README.md
+After=bluetooth.service ble-term-session.socket
+Requires=ble-term-session.socket
+# Registrations live on the D-Bus connection to bluetoothd, so restart with it.
+PartOf=bluetooth.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/ble-term
+ExecStart=/usr/sbin/ble-term-daemon $BLE_TERM_ARGS
+User=_bleterm
+Group=_bleterm
+SupplementaryGroups=bluetooth
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=bluetooth.target
