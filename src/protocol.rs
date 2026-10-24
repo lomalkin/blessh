@@ -1,4 +1,4 @@
-//! BleStream v1 wire format. See `docs/PROTOCOL.md` for the normative description.
+//! BleStream v1 wire format. See `docs/protocol.md` for the normative description.
 
 use uuid::Uuid;
 
