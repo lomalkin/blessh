@@ -41,3 +41,10 @@ Options for clients beyond Android and Linux, cheapest first (details:
   (reason 3, "server is shutting down") to the active client and
   disconnect it before exiting. Clients detect dead links on their own as
   well, so this is an additional signal, not something they depend on.
+
+## Packaging
+
+* **Unit files under `/usr/lib/systemd/system`.** The package installs them
+  under `/lib/systemd/system`; on merged-/usr systems purge then warns
+  "directory '/lib/systemd/system' not empty so not removed". Harmless, but
+  current Debian policy wants `/usr/lib`.
