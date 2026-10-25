@@ -1,48 +1,18 @@
-# sshd configuration used only for SSH sessions over Bluetooth LE.
+# sshd configuration for SSH sessions over Bluetooth LE.
+#
 # Each BLE client gets its own `sshd -i -f /etc/ble-term/sshd_config` from
-# ble-term-session@.service; the network SSH server (ssh.service) and its
-# /etc/ssh/sshd_config are not involved.
-
-HostKey /etc/ble-term/ssh_host_ed25519_key
-
-# Standard system authentication through PAM (passwords, pam_faillock, ...)
-# plus public keys from ~/.ssh/authorized_keys.
-UsePAM yes
-KbdInteractiveAuthentication yes
-PasswordAuthentication yes
-PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2
-PermitRootLogin no
-PermitEmptyPasswords no
-MaxAuthTries 3
-# Covers key exchange, comparing the host key fingerprint on first connect
-# and typing a password on a phone; also bounds how long an unauthenticated
-# client holds the single BLE session slot.
-LoginGraceTime 60
-# Anyone in radio range can try passwords. For keys only, set
-# PasswordAuthentication and KbdInteractiveAuthentication above to no (sshd
-# uses the first value it reads). To limit BLE logins to one group:
+# ble-term-session@.service. BLE is one more way into the system SSH
+# server: all settings, including the host keys, come from
+# /etc/ssh/sshd_config, included below. ssh.service does not have to be
+# running.
+#
+# sshd uses the first value it reads for most keywords, so settings placed
+# above the Include apply to BLE sessions only and win over the system
+# configuration, for example:
 #AllowGroups ble-term
+# sshd sees no source address for BLE clients ("UNKNOWN"), so `Match
+# Address` blocks in the system configuration do not apply to them.
+# Show the settings BLE sessions get:
+#   sudo sshd -T -f /etc/ble-term/sshd_config
 
-# BLE is slow: skip what is not needed for an interactive terminal.
-PrintMotd no
-Compression no
-X11Forwarding no
-AllowAgentForwarding no
-AllowTcpForwarding no
-AllowStreamLocalForwarding no
-PermitTunnel no
-# All of the above and any future forwarding type.
-DisableForwarding yes
-AcceptEnv LANG LC_* COLORTERM
-
-# sntrup761 is excluded: OpenSSH 9.x (Bookworm) offers it as its only
-# post-quantum key exchange, ConnectBot picks it, and its Java
-# implementation takes ~20 s on a phone. OpenSSH 10+ still negotiates
-# mlkem768x25519 (post-quantum); 9.x falls back to curve25519.
-KexAlgorithms -sntrup761x25519-sha512*
-
-ClientAliveInterval 0
-SyslogFacility AUTH
-LogLevel INFO
-Subsystem sftp internal-sftp
+Include /etc/ssh/sshd_config

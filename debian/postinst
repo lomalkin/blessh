@@ -1,7 +1,8 @@
 #!/bin/sh
 set -e
 
-KEY=/etc/ble-term/ssh_host_ed25519_key
+CONF=/etc/ble-term/sshd_config
+KEY=/etc/ssh/ssh_host_ed25519_key.pub
 
 # BlueZ before 5.67 enables EATT by default. bluetoothd then opens an EATT
 # channel to the phone, the phone refuses it without encryption, and
@@ -31,6 +32,37 @@ shared_socket_hint() {
     echo "ble-term: with BlueZ $v other Bluetooth LE devices nearby can disconnect an active"
     echo "  session or observe its encrypted traffic and keystroke timing. BlueZ 5.76 or"
     echo "  later (e.g. Debian trixie) fixes this."
+}
+
+# BLE sessions run sshd with the system SSH server's configuration
+# (/etc/ble-term/sshd_config includes /etc/ssh/sshd_config). Says what that
+# means for logins, or why sshd would refuse to start.
+policy_hint() {
+    if ! out=$(/usr/sbin/sshd -T -f "$CONF" 2>&1); then
+        echo "ble-term: sshd rejects $CONF; BLE logins will fail until this is fixed:"
+        echo "$out" | sed 's/^/  /'
+        return 0
+    fi
+    get() { echo "$out" | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
+    pw=no
+    if [ "$(get passwordauthentication)" = yes ] || [ "$(get kbdinteractiveauthentication)" = yes ]; then
+        pw=yes
+    fi
+    echo "ble-term: BLE logins follow the system SSH server's configuration (/etc/ssh/sshd_config):"
+    echo "  passwords: $pw, root login: $(get permitrootlogin)"
+    for k in allowusers allowgroups denyusers denygroups; do
+        v=$(get $k)
+        [ -z "$v" ] || echo "  $k: $v"
+    done
+    echo "  Settings for BLE sessions only go above the Include line in $CONF."
+}
+
+# Up to 0.1.x the package had its own host key; clients pinned it.
+host_key_hint() {
+    [ -n "$1" ] || return 0
+    dpkg --compare-versions "$1" lt 0.2.0 || return 0
+    echo "ble-term: BLE sessions now use the system SSH host keys. Clients that connected"
+    echo "  before see a host key change once; compare the fingerprint below."
 }
 
 # Printed on first installation only.
@@ -71,9 +103,6 @@ bluetooth_hint() {
 if [ "$1" = configure ]; then
     systemd-sysusers ble-term.conf
     systemd-tmpfiles --create ble-term.conf || true
-    if [ ! -f "$KEY" ]; then
-        ssh-keygen -q -t ed25519 -N '' -C "ble-term@$(hostname)" -f "$KEY"
-    fi
     if [ -d /run/systemd/system ]; then
         # The D-Bus policy names _bleterm; the bus ignores it if it read the
         # file before systemd-sysusers created the user.
@@ -85,8 +114,12 @@ if [ "$1" = configure ]; then
             systemctl restart ble-term.service
         fi
     fi
-    echo "ble-term: BLE SSH host key fingerprint:"
-    ssh-keygen -l -f "$KEY.pub" | sed 's/^/  /'
+    host_key_hint "$2"
+    if [ -f "$KEY" ]; then
+        echo "ble-term: SSH host key fingerprint (the same as for network SSH):"
+        ssh-keygen -l -f "$KEY" | sed 's/^/  /'
+    fi
+    policy_hint
     bluetooth_hint
     eatt_hint
     shared_socket_hint

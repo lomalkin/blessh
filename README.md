@@ -17,9 +17,12 @@ phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──
 * **No BlueZ reconfiguration.** The daemon registers a GATT service and an
   advertisement over D-Bus; no `main.conf` changes, no `--experimental`, no
   pairing agent. Other Bluetooth devices and services keep working.
-* **No pairing.** Security comes from SSH: the client pins the BLE host key
-  (`/etc/ble-term/ssh_host_ed25519_key`), users log in with their system
-  password (PAM) or `~/.ssh/authorized_keys`.
+* **No pairing.** Security comes from SSH: the client pins the host key,
+  users log in with their system password (PAM) or `~/.ssh/authorized_keys`.
+* **One more way into the system SSH server.** BLE sessions get the
+  configuration of `/etc/ssh/sshd_config` (authentication, allowed users,
+  host keys): whatever is allowed or refused over the network is allowed or
+  refused over BLE.
 * **Unprivileged daemon.** Radio input is parsed by `_bleterm`; the only root
   code is `ble-term-session`, which reads one line from the daemon and execs
   OpenSSH's `sshd`, started per connection by systemd. The network SSH
@@ -45,13 +48,31 @@ sudo apt install ./ble-term_<version>_arm64.deb
 ```
 
 The package creates the `_bleterm` user (allowed only the BlueZ calls the
-daemon needs, through a D-Bus policy), generates the BLE SSH host key,
-enables and starts `ble-term-session.socket` and `ble-term.service`, and
-prints the host key fingerprint. Show it again with
+daemon needs, through a D-Bus policy), enables and starts
+`ble-term-session.socket` and `ble-term.service`, and prints the SSH host
+key fingerprint and the login policy BLE sessions get. Show the fingerprint
+again with
 
 ```
-ssh-keygen -lf /etc/ble-term/ssh_host_ed25519_key.pub
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
+
+### SSH settings
+
+BLE sessions run `sshd -i -f /etc/ble-term/sshd_config`, and that file only
+includes `/etc/ssh/sshd_config`: the system SSH server's settings and host
+keys apply, with its `sshd_config.d` drop-ins. `ssh.service` itself may stay
+disabled. Settings meant for BLE sessions only go above the `Include` line
+in `/etc/ble-term/sshd_config` (sshd uses the first value it reads). sshd
+sees no source address for BLE clients, so `Match Address` blocks do not
+apply to them. Show what BLE sessions get:
+
+```
+sudo sshd -T -f /etc/ble-term/sshd_config
+```
+
+Before 0.2.0 the package had its own host key and its own settings
+(passwords allowed); see [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md).
 
 Logs: `journalctl -u ble-term -u 'ble-term-session@*'`.
 
@@ -84,11 +105,12 @@ the BLE link is neither paired nor encrypted, and SSH provides
 authentication and encryption. Recommended:
 
 * Compare the host key fingerprint on the first connection.
-* Use public keys and turn passwords off: set `PasswordAuthentication no`
-  and `KbdInteractiveAuthentication no` in `/etc/ble-term/sshd_config`. If
-  passwords stay on, use strong ones; sshd cannot rate-limit BLE clients by
-  source.
-* Limit who may log in over BLE with `AllowGroups` in the same file.
+* Use public keys and turn passwords off (`PasswordAuthentication no`,
+  `KbdInteractiveAuthentication no` in the system SSH configuration; this
+  applies to BLE too). If passwords stay on, use strong ones; sshd cannot
+  rate-limit BLE clients by source.
+* Limit who may log in over BLE only with `AllowGroups` above the
+  `Include` line in `/etc/ble-term/sshd_config`.
 * Use BlueZ 5.76 or later (Debian trixie). With older BlueZ, other BLE
   devices nearby can break an active session or observe its encrypted
   traffic and keystroke timing; the installer warns about this.

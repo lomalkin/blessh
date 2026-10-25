@@ -51,7 +51,7 @@ struct Args {
     #[arg(long)]
     readvertise: bool,
     /// SSH host public key whose fingerprint is logged at start-up.
-    #[arg(long, default_value = "/etc/ble-term/ssh_host_ed25519_key.pub")]
+    #[arg(long, default_value = "/etc/ssh/ssh_host_ed25519_key.pub")]
     host_key: PathBuf,
 }
 

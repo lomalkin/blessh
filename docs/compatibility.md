@@ -28,8 +28,10 @@ description is [protocol.md](protocol.md).
   credit, control frames not counted.
 * **CLOSE reasons 0–4** keep their meaning.
 * **Payload:** the stream carries a plain SSH connection to the server's
-  sshd. The BLE host key (`/etc/ble-term/ssh_host_ed25519_key`) is kept
-  across upgrades, otherwise every client sees a host key change.
+  sshd. Sessions use the system SSH host keys (since 0.2.0; before, the
+  package had its own, and the 0.2.0 upgrade changed the key once); the
+  package never changes them, otherwise every client sees a host key
+  change.
 * **Behaviour clients rely on:** the server ends the session on BLE
   disconnect; a second client gets CLOSE 1 (busy).
 

@@ -115,6 +115,26 @@ jobs:
           name: ble-term-${{ matrix.target }}
           path: target/${{ matrix.target }}/debian/*.deb
 
+  # The amd64 package installed in a clean Debian: BLE sessions get the
+  # system SSH server's configuration, purge leaves nothing behind.
+  package:
+    needs: deb
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ['debian:bookworm', 'debian:trixie']
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ble-term-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Install and check
+        run: |
+          apt-get update
+          tests/e2e-package.sh dist/*.deb
+
   # 32-bit Raspberry Pi OS. The ARMv6 target covers every Pi including
   # Pi Zero (W) and Pi 1. Debian's armhf cross toolchain is ARMv7-only and
   # the cross-rs images ship a glibc too old for current Rust std, so this
@@ -179,7 +199,7 @@ jobs:
   # the commit subjects since the previous tag.
   release:
     if: github.ref_type == 'tag'
-    needs: [test, deps, fuzz-smoke, deb, deb-armhf]
+    needs: [test, deps, fuzz-smoke, deb, deb-armhf, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write

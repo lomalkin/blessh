@@ -1,8 +1,9 @@
 [Unit]
 Description=ble-term SSH session
 Documentation=file:///usr/share/doc/ble-term/README.md
-# Independent of ssh.service: the network SSH server may stay disabled.
-ConditionPathExists=/etc/ble-term/ssh_host_ed25519_key
+# Uses the system SSH server's configuration and host keys
+# (/etc/ble-term/sshd_config includes /etc/ssh/sshd_config), but not
+# ssh.service: the network SSH server may stay disabled.
 
 [Service]
 # ble-term-session logs the session id and BLE device sent by the daemon,

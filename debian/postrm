@@ -2,6 +2,7 @@
 set -e
 
 if [ "$1" = purge ]; then
+    # Host key of versions before 0.2.0, which had their own.
     rm -f /etc/ble-term/ssh_host_ed25519_key /etc/ble-term/ssh_host_ed25519_key.pub
     rmdir --ignore-fail-on-non-empty /etc/ble-term 2>/dev/null || true
 fi

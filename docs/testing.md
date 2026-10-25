@@ -18,6 +18,7 @@ done until these pass.
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
 | Packages for arm64, amd64, armhf; ARMv6 unit tests on an emulated ARM1176 | jobs `deb`, `deb-armhf` |
+| Package in clean bookworm and trixie: BLE sessions get the system SSH configuration, purge | job `package` (`tests/e2e-package.sh`) |
 | Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
 
 ## Tier 2: long checks and bench tests, on request
@@ -54,8 +55,10 @@ Server:
 sudo apt install ./ble-term_<version>_<arch>.deb
 ```
 
-The output ends with the BLE SSH host key fingerprint
-(`256 SHA256:… ble-term@<host> (ED25519)`); note it. If Bluetooth is off, the
+The output shows the SSH host key fingerprint (the system's, the same as
+for network SSH: `256 SHA256:… root@<host> (ED25519)`), note it, and the
+login policy BLE sessions get from `/etc/ssh/sshd_config` (passwords, root
+login, allowed users). If Bluetooth is off, the
 installer says so and how to switch it on. Then check:
 
 ```
@@ -71,9 +74,8 @@ The daemon advertises the host name. To change it, set
 `BLE_TERM_ARGS="--name my-pi"` in `/etc/default/ble-term` and run
 `sudo systemctl restart ble-term`.
 
-Android client (ConnectBot BLE build, package `org.connectbot.debug`, installs
-next to a Play Store ConnectBot; uninstall an earlier test build if Android
-refuses the update):
+Android client (ConnectBot BLE, package `io.github.aluminique.connectbot.ble`,
+installs next to a Play Store ConnectBot):
 
 1. Hosts → **+** → protocol **ble** → **Scan for Bluetooth LE servers**,
    allow "Nearby devices", pick the server, enter the user name, save.
@@ -93,9 +95,9 @@ ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-b
 
 | ID | Case | Pass criteria |
 |---|---|---|
-| S1 | Install | Package installs, fingerprint printed, both units active, journal shows `ready` |
+| S1 | Install | Package installs, fingerprint and login policy printed, both units active, journal shows `ready` |
 | S2 | Discovery | The server appears in the client's scan |
-| S3 | Login | First connect shows the installer's fingerprint; password login (and key login, if used) succeeds |
+| S3 | Login | First connect shows the installer's fingerprint; logins succeed and fail as over network SSH (key login; password login only where the system allows it) |
 | S4 | Full-screen programs | `htop`, `vim` or `nano`, `tmux` draw and respond correctly |
 | S5 | Window resize | Rotating the phone (or resizing the terminal) resizes the remote terminal (`stty size`) |
 | S6 | Bulk output | `cat /usr/share/common-licenses/GPL-3` or `dmesg` finishes; Ctrl+C during long output stops it |

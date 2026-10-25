@@ -19,8 +19,10 @@ Android client belong to the client's repository.
 The server advertises a GATT service without pairing. Anyone within radio
 range (tens of metres, more with a directional antenna) can connect and send
 arbitrary data before authenticating. Authentication and encryption are left
-to SSH: the client pins the BLE host key, users log in with a password (PAM)
-or a public key.
+to SSH: the client pins the host key, users log in with a password (PAM)
+or a public key. BLE sessions get the system SSH server's configuration and
+host keys, so the login policy is the administrator's, the same as over the
+network.
 
 Assets: the server (code execution, privilege escalation), user accounts
 (passwords), the confidentiality and integrity of sessions, the
@@ -45,9 +47,10 @@ the phone.
 | `ble-term-daemon` | `_bleterm`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
 | `/run/ble-term/session.sock` | socket `0600 _bleterm` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
 | `ble-term-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
-| `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH; no root login, `MaxAuthTries 3`, `LoginGraceTime 60`, no forwarding of any kind, no compression |
+| `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH with the system SSH server's configuration (the file only includes `/etc/ssh/sshd_config`) |
 
-The BLE SSH host key is `0600 root`; the daemon cannot read it.
+The SSH host keys are the system's (`0600 root`); the daemon reads only the
+public key, to log its fingerprint.
 
 ## Findings
 
@@ -55,14 +58,15 @@ The BLE SSH host key is `0600 root`; the daemon cannot read it.
 |---|---|---|---|
 | S-1 | Medium | Fixed (0.1.3) | Journal entries could be forged through CLOSE messages |
 | S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
-| S-3 | Medium | Mitigated (0.1.3), rest in backlog | One client can occupy the only session slot |
-| S-4 | Medium | Mitigated (0.1.3), rest in backlog | Password guessing over BLE is not rate limited by source |
+| S-3 | Medium | Partly mitigated (0.1.3), rest in backlog | One client can occupy the only session slot |
+| S-4 | Medium | Documented, rest in backlog | Password guessing over BLE is not rate limited by source |
 | S-5 | Low | Fixed (0.1.3) | A compromised daemon controls all of BlueZ over D-Bus |
-| S-6 | Low | Fixed (0.1.3) | Unix socket forwarding was allowed |
+| S-6 | Low | Superseded (0.2.0): system policy | Unix socket forwarding was allowed |
 | S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
 | S-8 | Info | Accepted | BLE addresses in the audit log are weak identities |
 | S-9 | Info | Accepted | The daemon is trusted for the audit fields it passes on |
 | S-10 | Info | Fixed (0.1.3) | Integer overflow in `ble-term-session --timeout` |
+| S-11 | Medium | Fixed (0.2.0) | BLE logins did not follow the system SSH server's policy |
 
 ### S-1 Forged journal entries through CLOSE messages
 
@@ -110,19 +114,21 @@ with this documentation.
 
 v1 serves one client. A nearby device can keep the slot: up to 10 s for
 the BleStream handshake (5 s if it opens only one characteristic), then up
-to `LoginGraceTime` (60 s) before authenticating, and repeat. 0.1.3 halves
-both limits (they were 20 s and 120 s); several sessions at once and other
-options are in backlog.md.
+to sshd's `LoginGraceTime` before authenticating, and repeat. 0.1.3 cut the
+handshake limit from 20 s to 10 s. `LoginGraceTime` was 60 s in 0.1.3;
+since 0.2.0 it is the system's (120 s by default, see S-11). Several
+sessions at once and other options are in backlog.md.
 
 ### S-4 Password guessing
 
 sshd sees no source address for BLE sessions, so per-source penalties do
-not apply. `MaxAuthTries 3` per connection (4 before 0.1.3), the session
-slot (one connection at a time, `LoginGraceTime` 60 s) and PAM (e.g.
-`pam_faillock`, if configured) are the limits. BLE addresses of phones
-rotate, so a per-address limit in the daemon is weak. The README
-recommends public keys only and `AllowGroups`, and `sshd_config` explains
-how; a default group and a session rate limit are in backlog.md.
+not apply. The system's `MaxAuthTries` per connection (6 by default; 0.1.3
+had 3), the session slot (one connection at a time, `LoginGraceTime`) and
+PAM (e.g. `pam_faillock`, if configured) are the limits. Guessing over BLE
+is slower than over the network: one connection at a time at a few kB/s.
+BLE addresses of phones rotate, so a per-address limit in the daemon is
+weak. The README recommends public keys only, and `AllowGroups` for BLE
+logins; a default group and a session rate limit are in backlog.md.
 
 ### S-5 D-Bus access of the daemon
 
@@ -145,8 +151,10 @@ runs the daemon under the policy and checks that other calls are denied.
 
 `AllowStreamLocalForwarding` defaulted to yes. Only an authenticated user
 could use it, with their own rights, so no privilege was gained; it was
-still contrary to the intent of the configuration. Fixed: `DisableForwarding
-yes`.
+still contrary to the intent of the configuration. Fixed in 0.1.3:
+`DisableForwarding yes`. Since 0.2.0 forwarding follows the system SSH
+server's configuration, like everything else (S-11): the user can forward
+over the network with the same rights anyway.
 
 ### S-7 Host name broadcast
 
@@ -176,6 +184,18 @@ gains nothing else: sshd still authenticates.
 `--timeout` × 1000 could overflow (the value comes from the unit file, not
 from the radio). Fixed with saturating arithmetic.
 
+### S-11 BLE login policy differed from the system's
+
+Up to 0.1.3 BLE sessions ran sshd with a configuration of their own
+(`-f /etc/ble-term/sshd_config` replaces `/etc/ssh/sshd_config`) and their
+own host key. Passwords were allowed over BLE even where the administrator
+had turned them off for network SSH, and `AllowUsers`, `Match` blocks or
+drop-ins in `sshd_config.d` did not apply; nothing pointed this out. Fixed
+in 0.2.0: `/etc/ble-term/sshd_config` only includes `/etc/ssh/sshd_config`,
+the system host keys are used, and the installer prints the resulting
+policy (passwords, root login, allowed users). Settings for BLE alone can
+go above the `Include`. `tests/e2e-package.sh` checks this in CI.
+
 ## Verification
 
 | Check | Scope | Result |
@@ -187,6 +207,7 @@ from the radio). Fixed with saturating arithmetic.
 | Kani | frame decoding (`link::proofs::decode_never_panics`): every packet of up to 16 bytes | no panic (33 s). Harnesses for the link state machine were replaced by exhaustive unit tests over boundary values (frame size, window, data length; 822 edge packets alone and in pairs): CBMC ran out of memory on std's containers |
 | D-Bus policy | `tests/e2e-vhci.sh` with the daemon as a separate user under the policy; calls outside the list (`StartDiscovery`, setting `Pairable`, `RemoveDevice`) | passes; other calls denied, allowed without the policy. On the Trixie and Bookworm benches with a phone: sessions, reconnects and idle-link disconnects work, and the bus logged no rejected call from the daemon |
 | Bench, over the radio | two Linux machines (BlueZ 5.82 and 5.66), both directions: sessions back to back, transfers with checksums, both RX write types, link loss | passes; found and fixed the reuse of sockets of a dead link (0.1.3) |
+| Package configuration (`tests/e2e-package.sh`, CI) | clean bookworm and trixie: install, settings from `sshd_config.d` and from above the `Include`, purge | passes |
 | `cargo audit` | main crate and fuzz crate lock files | no advisories |
 | `cargo deny` | licences, advisories, sources, yanked crates (`deny.toml`) | ok; one duplicate crate version warning |
 | Sandbox of the running daemon | target bench (Trixie) | as in the table above |
