@@ -9,7 +9,7 @@
 //! connection, frames of the previous session (a late CLOSE, a CREDIT in
 //! flight) can still arrive before the new session starts.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 use crate::protocol::{
     CloseReason, DecodeError, Frame, HEADER_LEN, MAX_FRAME, MIN_FRAME, T_CLOSE, T_HELLO, VERSION,
@@ -62,6 +62,13 @@ impl From<DecodeError> for LinkError {
     }
 }
 
+/// Slot of the reorder buffer for a sequence number. REORDER_LIMIT divides
+/// 2^16, so slots stay consistent when sequence numbers wrap.
+fn slot(seq: u16) -> usize {
+    const _: () = assert!(65536 % REORDER_LIMIT as u32 == 0);
+    (seq % REORDER_LIMIT) as usize
+}
+
 /// Whether a packet can be the first one of a session: a HELLO or a CLOSE
 /// (e.g. "busy" instead of a HELLO), with sequence number 0.
 fn starts_session(pkt: &[u8]) -> bool {
@@ -72,7 +79,9 @@ pub struct Link {
     max_frame: usize,
     tx_seq: u16,
     rx_seq: u16,
-    reorder: BTreeMap<u16, Vec<u8>>,
+    /// Frames that arrived early, at index `seq % REORDER_LIMIT`: with at
+    /// most REORDER_LIMIT frames ahead, no two can share a slot.
+    reorder: [Option<(u16, Frame)>; REORDER_LIMIT as usize],
     peer_open: bool,
     /// DATA bytes we are still allowed to send.
     send_credit: u64,
@@ -107,7 +116,7 @@ impl Link {
             max_frame,
             tx_seq: 0,
             rx_seq: 0,
-            reorder: BTreeMap::new(),
+            reorder: std::array::from_fn(|_| None),
             reordered: 0,
             ignored: 0,
             peer_open: false,
@@ -149,16 +158,18 @@ impl Link {
     /// property tests; cheap enough to call after every operation.
     #[doc(hidden)]
     pub fn check_invariants(&self) {
-        assert!(
-            self.reorder.len() <= REORDER_LIMIT as usize,
-            "reorder buffer too large"
-        );
-        for seq in self.reorder.keys() {
+        for (i, (seq, _)) in self
+            .reorder
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| Some((i, e.as_ref()?)))
+        {
             let ahead = seq.wrapping_sub(self.rx_seq);
             assert!(
                 ahead > 0 && ahead <= REORDER_LIMIT,
                 "reorder entry outside the window"
             );
+            assert_eq!(i, slot(*seq), "reorder entry in the wrong slot");
         }
         assert!(
             self.recv_allowance + self.consumed as u64 <= self.recv_window as u64,
@@ -257,21 +268,25 @@ impl Link {
         let mut events = Vec::new();
         if seq != self.rx_seq {
             let ahead = seq.wrapping_sub(self.rx_seq);
-            if ahead == 0 || ahead > REORDER_LIMIT || self.reorder.contains_key(&seq) {
+            let held = &mut self.reorder[slot(seq)];
+            if ahead == 0 || ahead > REORDER_LIMIT || held.is_some() {
                 return Err(LinkError::OutOfOrder {
                     expected: self.rx_seq,
                     got: seq,
                 });
             }
-            self.reorder.insert(seq, pkt.to_vec());
+            *held = Some((seq, frame));
             self.reordered += 1;
             return Ok(events);
         }
         self.rx_seq = self.rx_seq.wrapping_add(1);
         self.handle(frame, &mut events)?;
-        while let Some(pkt) = self.reorder.remove(&self.rx_seq) {
+        while let Some((seq, _)) = &self.reorder[slot(self.rx_seq)] {
+            if *seq != self.rx_seq {
+                break;
+            }
+            let (_, frame) = self.reorder[slot(self.rx_seq)].take().unwrap();
             self.rx_seq = self.rx_seq.wrapping_add(1);
-            let (_, frame) = Frame::decode(&pkt)?;
             self.handle(frame, &mut events)?;
         }
         Ok(events)
@@ -417,6 +432,39 @@ mod tests {
             b.on_packet(&Frame::Credit(1).encode(500)),
             Err(LinkError::OutOfOrder { .. })
         ));
+    }
+
+    #[test]
+    fn reorders_whole_window() {
+        let mut a = Link::new(MIN_FRAME, 10_000);
+        let mut b = Link::new(MIN_FRAME, 10_000);
+        pump(&mut a, &mut b);
+        pump(&mut b, &mut a);
+        let sent: Vec<u8> = (0..=255u8)
+            .cycle()
+            .take(65 * (MIN_FRAME - HEADER_LEN))
+            .collect();
+        a.send(&sent);
+        let mut pkts = Vec::new();
+        while let Some(p) = a.poll_transmit() {
+            pkts.push(p);
+        }
+        assert_eq!(pkts.len(), 65);
+        // The first frame comes last; the others arrive 1 to 64 ahead.
+        pkts[1..].reverse();
+        pkts.rotate_left(1);
+        let mut out = Vec::new();
+        for p in &pkts {
+            out.extend(data(&b.on_packet(p).unwrap()));
+            b.check_invariants();
+        }
+        assert_eq!(out, sent);
+        assert_eq!(b.reordered(), 64);
+        // A frame 65 ahead is outside the window.
+        let mut c = Link::new(MIN_FRAME, 10_000);
+        pump(&mut Link::new(MIN_FRAME, 10_000), &mut c);
+        assert!(c.on_packet(&Frame::Credit(1).encode(65)).is_ok());
+        assert!(c.on_packet(&Frame::Credit(1).encode(66)).is_err());
     }
 
     #[test]
