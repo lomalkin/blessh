@@ -30,3 +30,12 @@ Options for clients beyond Android and Linux, cheapest first (details:
 * Web client (Web Bluetooth + WASM SSH): decided against for now (origin
   trust, supply chain, unverified browser write behaviour).
 * iOS app.
+
+## Sessions
+
+* **CLOSE on shutdown.** When the daemon stops (restart, package upgrade,
+  `systemctl stop`) it aborts the session without telling the client, and
+  the BLE link stays up; an idle client does not notice. Send CLOSE
+  (reason 3, "server is shutting down") to the active client and
+  disconnect it before exiting. Clients detect dead links on their own as
+  well, so this is an additional signal, not something they depend on.
