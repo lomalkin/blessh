@@ -30,7 +30,7 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 |---|---|
 | Real BlueZ GATT path with two virtual controllers (root, `hci_vhci`) | `tests/e2e-vhci.sh`; again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
 | Undefined behaviour | `cargo +nightly miri test --lib --no-default-features` (about 40 min) |
-| Model checking | `cargo kani --no-default-features --lib` (`link::proofs`; several GB of memory) |
+| Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani --no-default-features --lib` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
 | Bench: install and upgrade, client and server over the radio (`ble-term-connect` on one bench node, server on another) | the cases below that need no phone |

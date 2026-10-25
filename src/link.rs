@@ -116,7 +116,7 @@ impl Link {
             max_frame,
             tx_seq: 0,
             rx_seq: 0,
-            reorder: std::array::from_fn(|_| None),
+            reorder: [const { None }; REORDER_LIMIT as usize],
             reordered: 0,
             ignored: 0,
             peer_open: false,
@@ -225,7 +225,10 @@ impl Link {
     /// Reports that the application consumed `n` bytes of received data,
     /// so the space can be granted back to the peer.
     pub fn consumed(&mut self, n: usize) {
-        self.consumed = self.consumed.saturating_add(n as u32);
+        // Never return more credit than was used: the peer must not get more
+        // than the window, whatever the caller claims.
+        let used = self.recv_window as u64 - self.recv_allowance - self.consumed as u64;
+        self.consumed += (n as u64).min(used) as u32;
         let threshold = (self.recv_window / 4).max(1);
         if self.consumed >= threshold && !self.closing {
             let n = std::mem::take(&mut self.consumed);
@@ -318,7 +321,7 @@ impl Link {
                     events.push(Event::Data(d));
                 }
             }
-            Frame::Credit(n) => self.send_credit += n as u64,
+            Frame::Credit(n) => self.send_credit = self.send_credit.saturating_add(n as u64),
         }
         Ok(())
     }
@@ -529,6 +532,175 @@ mod tests {
         assert!(a.is_flushed());
     }
 
+    /// Boundary values for frame size, the peer's window and the amount of
+    /// data: frames never exceed the frame size, DATA never exceeds the
+    /// credit, and all data arrives once credit allows.
+    #[test]
+    #[cfg_attr(miri, ignore = "slow under Miri")]
+    fn frames_respect_size_and_credit() {
+        let frame_sizes = [
+            0,
+            1,
+            MIN_FRAME - 1,
+            MIN_FRAME,
+            MIN_FRAME + 1,
+            100,
+            MAX_FRAME,
+            MAX_FRAME + 1,
+            usize::MAX,
+        ];
+        let windows = [0, 1, 2, 17, 18, 1000, u32::MAX];
+        let lengths = [0, 1, 16, 17, 18, 496, 497, 498, 1000, 5000];
+        for &max_frame in &frame_sizes {
+            for &window in &windows {
+                for &len in &lengths {
+                    let mut a = Link::new(max_frame, 100);
+                    let mut b = Link::new(MAX_FRAME, window);
+                    pump(&mut a, &mut b);
+                    pump(&mut b, &mut a);
+                    let sent: Vec<u8> = (0..len).map(|i| i as u8).collect();
+                    a.send(&sent);
+                    let mut credit = window as u64;
+                    let mut got = Vec::new();
+                    loop {
+                        while let Some(p) = a.poll_transmit() {
+                            assert!(p.len() <= a.max_frame());
+                            assert!((MIN_FRAME..=MAX_FRAME).contains(&a.max_frame()));
+                            if let Ok((_, Frame::Data(d))) = Frame::decode(&p) {
+                                assert!(!d.is_empty() && d.len() as u64 <= credit);
+                                credit -= d.len() as u64;
+                                got.extend(d);
+                            }
+                            a.check_invariants();
+                        }
+                        if got.len() == len {
+                            break;
+                        }
+                        // The peer returns credit in small steps.
+                        let n = 7.min(len - got.len()) as u32;
+                        a.on_packet(&Frame::Credit(n).encode(a.rx_seq)).unwrap();
+                        credit += n as u64;
+                    }
+                    assert_eq!(got, sent, "max_frame {max_frame} window {window} len {len}");
+                }
+            }
+        }
+    }
+
+    /// Every packet from a set of edge cases, alone and in pairs, before and
+    /// after the handshake: no panic, and the invariants hold as long as no
+    /// error has occurred (after a protocol error the link is closed and not
+    /// used again).
+    #[test]
+    #[cfg_attr(miri, ignore = "slow under Miri")]
+    fn edge_packets_keep_invariants() {
+        let hello = |v: u8, w: u32| {
+            let mut p = b"BLTM".to_vec();
+            p.extend([v, 0]);
+            p.extend(w.to_le_bytes());
+            p
+        };
+        let payloads: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![1, 2, 3],
+            vec![0xff; 4],
+            0u32.to_le_bytes().to_vec(),
+            u32::MAX.to_le_bytes().to_vec(),
+            vec![7; 16],
+            vec![7; 17],
+            hello(1, 0),
+            hello(1, u32::MAX),
+            hello(2, 16),
+            hello(1, 16)[..9].to_vec(),
+            "é".as_bytes()[..1].to_vec(),
+        ];
+        let mut packets: Vec<Vec<u8>> = vec![vec![], vec![1], vec![1, 0]];
+        for ty in [0u8, 1, 2, 3, 4, 5, 0xff] {
+            for seq in [0u16, 1, 2, 4, 63, 64, 65, 66, 65535] {
+                for p in &payloads {
+                    let mut pkt = vec![ty];
+                    pkt.extend(seq.to_le_bytes());
+                    pkt.extend(p);
+                    packets.push(pkt);
+                }
+            }
+        }
+        fn fresh() -> Link {
+            Link::new(MIN_FRAME, 16)
+        }
+        fn open() -> Link {
+            let mut l = fresh();
+            let hello = Frame::Hello {
+                version: 1,
+                flags: 0,
+                window: 16,
+            };
+            l.on_packet(&hello.encode(0)).unwrap();
+            l
+        }
+        for start in [fresh as fn() -> Link, open] {
+            for first in &packets {
+                let mut base = start();
+                if base.on_packet(first).is_err() {
+                    continue;
+                }
+                base.check_invariants();
+                base.consumed(usize::MAX);
+                base.check_invariants();
+                for second in &packets {
+                    let mut l = start();
+                    l.on_packet(first).unwrap();
+                    let ok = l.on_packet(second).is_ok();
+                    while l.poll_transmit().is_some() {}
+                    if ok {
+                        l.check_invariants();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn credit_returned_only_for_received_data() {
+        let mut a = Link::new(MIN_FRAME, 100);
+        let mut b = Link::new(MIN_FRAME, 8);
+        pump(&mut a, &mut b);
+        pump(&mut b, &mut a);
+        // Claiming more than was received returns nothing beyond the window.
+        b.consumed(1000);
+        b.check_invariants();
+        assert!(b.poll_transmit().is_none());
+        a.send(&[1; 8]);
+        assert_eq!(data(&pump(&mut a, &mut b)).len(), 8);
+        a.send(&[2; 8]);
+        assert!(a.poll_transmit().is_none(), "window used up");
+        b.consumed(usize::MAX);
+        b.check_invariants();
+        pump(&mut b, &mut a);
+        assert_eq!(data(&pump(&mut a, &mut b)).len(), 8);
+    }
+
+    #[test]
+    fn credit_saturates() {
+        let mut a = Link::new(MIN_FRAME, 100);
+        a.on_packet(
+            &Frame::Hello {
+                version: 1,
+                flags: 0,
+                window: u32::MAX,
+            }
+            .encode(0),
+        )
+        .unwrap();
+        for seq in 1..=3 {
+            a.on_packet(&Frame::Credit(u32::MAX).encode(seq)).unwrap();
+        }
+        a.send(&[0; 100]);
+        while a.poll_transmit().is_some() {}
+        a.check_invariants();
+    }
+
     #[test]
     fn close_message_fits_frame() {
         let mut a = Link::new(20, 100);
@@ -572,64 +744,5 @@ mod proofs {
         if let Ok((seq, frame)) = Frame::decode(&pkt) {
             let _ = frame.encode(seq);
         }
-    }
-
-    /// Two arbitrary packets after an arbitrary HELLO-or-not, with the
-    /// application consuming arbitrary amounts in between.
-    #[kani::proof]
-    #[kani::unwind(17)]
-    #[kani::solver(cadical)]
-    fn packets_keep_invariants() {
-        let window: u32 = kani::any();
-        kani::assume(window > 0 && window <= 64);
-        let mut link = Link::new(kani::any::<u8>() as usize, window);
-        let mut unconsumed: usize = 0;
-        for _ in 0..2 {
-            let pkt = any_packet::<14>();
-            match link.on_packet(&pkt) {
-                Ok(events) => {
-                    for ev in events {
-                        if let Event::Data(d) = ev {
-                            unconsumed += d.len();
-                        }
-                    }
-                    link.check_invariants();
-                }
-                Err(_) => return,
-            }
-            let n: usize = kani::any();
-            kani::assume(n <= unconsumed);
-            unconsumed -= n;
-            link.consumed(n);
-            link.check_invariants();
-        }
-    }
-
-    /// Whatever credit the peer grants, DATA frames never exceed it or the
-    /// frame size limit.
-    #[kani::proof]
-    #[kani::unwind(9)]
-    #[kani::solver(cadical)]
-    fn data_respects_credit_and_frame_size() {
-        let mut link = Link::new(MIN_FRAME, 16);
-        let window: u32 = kani::any();
-        let hello = Frame::Hello {
-            version: VERSION,
-            flags: 0,
-            window,
-        }
-        .encode(0);
-        assert!(link.on_packet(&hello).is_ok());
-        let payload: [u8; 8] = kani::any();
-        link.send(&payload);
-        let mut sent: u64 = 0;
-        while let Some(pkt) = link.poll_transmit() {
-            assert!(pkt.len() <= MIN_FRAME);
-            if let Ok((_, Frame::Data(d))) = Frame::decode(&pkt) {
-                sent += d.len() as u64;
-            }
-        }
-        assert!(sent <= window as u64);
-        assert!(sent <= payload.len() as u64);
     }
 }

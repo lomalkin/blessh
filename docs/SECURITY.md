@@ -184,7 +184,7 @@ from the radio). Fixed with saturating arithmetic.
 | Fuzzing (`tests/fuzz`) | frame decoding, link state machine, link pairs, bridge, preamble | no crashes in our code |
 | AddressSanitizer, LeakSanitizer | unit tests; loopback end-to-end test (300 KB each way, reordering, session socket) | clean |
 | Miri | library unit tests without BlueZ (`cargo miri test --lib --no-default-features`) | all 13 tests clean (`sequence_wraps`, 70 000 frames, takes about 40 minutes under Miri) |
-| Kani | `link::proofs`: frame decoding, link invariants over packet sequences, credit and frame size limits | pending |
+| Kani | frame decoding (`link::proofs::decode_never_panics`): every packet of up to 16 bytes | no panic (33 s). Harnesses for the link state machine were replaced by exhaustive unit tests over boundary values (frame size, window, data length; 822 edge packets alone and in pairs): CBMC ran out of memory on std's containers |
 | D-Bus policy | `tests/e2e-vhci.sh` with the daemon as a separate user under the policy; calls outside the list (`StartDiscovery`, setting `Pairable`, `RemoveDevice`) | passes; other calls denied, allowed without the policy. On the Trixie and Bookworm benches with a phone: sessions, reconnects and idle-link disconnects work, and the bus logged no rejected call from the daemon |
 | `cargo audit` | main crate and fuzz crate lock files | no advisories |
 | `cargo deny` | licences, advisories, sources, yanked crates (`deny.toml`) | ok; one duplicate crate version warning |
