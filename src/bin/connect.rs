@@ -216,6 +216,12 @@ fn eatt_channels(conf: &str) -> Option<u8> {
 /// Why this machine's BlueZ may open several ATT bearers (EATT), which
 /// BleStream v1 does not support. BlueZ before 5.67 does so by default.
 fn eatt_hint() -> Option<String> {
+    // EATT needs the kernel's ECRED L2CAP mode; the ble-term package turns
+    // it off on BlueZ before 5.67 (README, "Bookworm").
+    let ecred = std::fs::read_to_string("/sys/module/bluetooth/parameters/enable_ecred");
+    if ecred.is_ok_and(|v| v.trim() == "N") {
+        return None;
+    }
     let conf = std::fs::read_to_string("/etc/bluetooth/main.conf").unwrap_or_default();
     match eatt_channels(&conf) {
         Some(n) if n > 1 => return Some(format!("Channels = {n} in /etc/bluetooth/main.conf")),

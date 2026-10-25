@@ -180,6 +180,14 @@ The client machine needs EATT off as well (`Channels = 1` in the `[GATT]`
 section of `/etc/bluetooth/main.conf`, the default since BlueZ 5.67);
 `ble-term-connect` warns if it is on.
 
+If the server also publishes a GATT service that requires encryption, the
+client machine's bluetoothd may try to pair with it on its own and the
+connection then hangs before ble-term is reached. Seen with PipeWire's
+WirePlumber on the server, which publishes BLE MIDI, and BlueZ's MIDI
+plugin on the client; phones are not affected. Turn off BLE MIDI in
+WirePlumber on the server, or start the client's bluetoothd without the
+MIDI plugin (`-P midi`).
+
 ## Development
 
 ```
