@@ -1,6 +1,8 @@
 //! Two links over a reliable channel that reorders packets within the
 //! allowed window (as EATT may): whatever the schedule, each side receives
 //! exactly the bytes the other sent, in order, and no protocol error occurs.
+//! Nothing overtakes a HELLO: a link ignores packets that arrive before the
+//! peer's HELLO, and v1 tolerates reordering only, it assumes one bearer.
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -44,7 +46,7 @@ fuzz_target!(|input: Input| {
             return;
         }
         let mut n = n.min(wire[to].len() - 1);
-        if seq(&wire[to][n]).wrapping_sub(seq(&wire[to][0])) > 60 {
+        if !links[to].is_open() || seq(&wire[to][n]).wrapping_sub(seq(&wire[to][0])) > 60 {
             n = 0;
         }
         let pkt = wire[to].remove(n);
