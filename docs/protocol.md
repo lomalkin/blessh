@@ -69,7 +69,8 @@ ignore bytes after the window field. Both are reserved for compatible
 extensions, see [compatibility.md](compatibility.md).
 
 CLOSE reasons: 0 normal, 1 busy (another client is connected), 2 protocol
-error, 3 session unavailable (server could not start sshd), 4 timeout.
+error, 3 session unavailable (server could not start sshd, or is shutting
+down), 4 timeout.
 
 ## Session
 

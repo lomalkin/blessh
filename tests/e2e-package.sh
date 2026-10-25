@@ -29,14 +29,19 @@ ble() { /usr/sbin/sshd -T -f /etc/ble-term/sshd_config | awk -v k="$1" '$1 == k 
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y --no-install-recommends "$DEB" > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
-grep -E '^(ble-term:|  )' "$T/install.log"
+sed -n '/^ble-term .*: SSH over Bluetooth LE$/,/^Processing triggers/p' "$T/install.log" | grep -v '^Processing'
 
 [ ! -e /etc/ble-term/ssh_host_ed25519_key ]
 check "no host key of its own" $?
-grep -q 'SSH host key fingerprint' "$T/install.log"
+fp=$(ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub | awk '{ print $2 }')
+grep -q "^  Host key  $fp (same as network SSH)" "$T/install.log"
 check "installer prints the system host key fingerprint" $?
-grep -q 'BLE logins follow the system SSH server' "$T/install.log"
+grep -q '^  Policy    as network SSH: passwords ' "$T/install.log"
 check "installer prints the login policy" $?
+grep -q '^  sshd configuration  valid  *OK$' "$T/install.log"
+check "installer checks the sshd configuration" $?
+! sed -n '/^ble-term .*: SSH over Bluetooth LE$/,/^Processing triggers/p' "$T/install.log" | grep -q '.\{101\}'
+check "installer lines fit in 100 columns" $?
 /usr/sbin/sshd -t -f /etc/ble-term/sshd_config
 check "sshd accepts the configuration" $?
 keys=$(/usr/sbin/sshd -T -f /etc/ble-term/sshd_config | grep '^hostkey ')
@@ -50,8 +55,8 @@ check "passwords off in sshd_config.d apply to BLE" $?
 check "AllowUsers in sshd_config.d applies to BLE" $?
 [ "$(ble maxauthtries)" = 2 ]
 check "MaxAuthTries in sshd_config.d applies to BLE" $?
-dpkg-reconfigure ble-term 2>&1 | grep -q 'passwords: no'
-check "installer reports passwords off" $?
+dpkg-reconfigure ble-term 2>&1 | grep -q 'as network SSH: passwords no, root [a-z-]*, AllowUsers alice$'
+check "installer reports passwords off and AllowUsers" $?
 
 sed -i 's/^#AllowGroups ble-term/AllowGroups ble-term/' /etc/ble-term/sshd_config
 [ "$(ble allowgroups)" = ble-term ]
@@ -75,7 +80,7 @@ else
     [ "$(eatt)" = Y ]
     check "ECRED left alone on BlueZ >= 5.67" $?
 fi
-grep -q 'ExecStartPre=+/usr/lib/ble-term/eatt-off' /lib/systemd/system/ble-term.service
+grep -q 'ExecStartPre=+/usr/lib/ble-term/eatt-off' /usr/lib/systemd/system/ble-term.service
 check "service runs eatt-off" $?
 
 apt-get purge -y ble-term > "$T/purge.log" 2>&1 || { cat "$T/purge.log"; exit 1; }

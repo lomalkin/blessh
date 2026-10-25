@@ -33,18 +33,9 @@ Options for clients beyond Android and Linux, cheapest first (details:
   trust, supply chain, unverified browser write behaviour).
 * iOS app.
 
-## Sessions
-
-* **CLOSE on shutdown.** When the daemon stops (restart, package upgrade,
-  `systemctl stop`) it aborts the session without telling the client, and
-  the BLE link stays up; an idle client does not notice. Send CLOSE
-  (reason 3, "server is shutting down") to the active client and
-  disconnect it before exiting. Clients detect dead links on their own as
-  well, so this is an additional signal, not something they depend on.
-
 ## Packaging
 
-* **Unit files under `/usr/lib/systemd/system`.** The package installs them
-  under `/lib/systemd/system`; on merged-/usr systems purge then warns
-  "directory '/lib/systemd/system' not empty so not removed". Harmless, but
-  current Debian policy wants `/usr/lib`.
+* **Duplicate `/run/sshd` in tmpfiles.** The package creates `/run/sshd`
+  for `sshd -i` without ssh.service. openssh-server in Debian 13 ships its
+  own tmpfiles line for it, so systemd-tmpfiles warns "Duplicate line for
+  path /run/sshd, ignoring". Harmless; Debian 12 needs our line.

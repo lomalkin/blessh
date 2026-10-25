@@ -4,88 +4,150 @@ set -e
 CONF=/etc/ble-term/sshd_config
 KEY=/etc/ssh/ssh_host_ed25519_key.pub
 
+# The installer prints one table of checks, then the host key, the login
+# policy and (on first installation) the commands. Columns: what, its
+# state, OK/WARN/FAIL/NOTE, and for anything but OK a short reason or fix.
+row() {
+    printf '  %-19s %-26s %-4s  %s\n' "$1" "$2" "$3" "$4" | sed 's/ *$//'
+}
+
+BLUEZ=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null || echo unknown)
+
 # BlueZ before 5.69 shares the Acquire* sockets of a characteristic between
 # all connected devices, and before 5.76 sends notifications to every
 # subscribed device: another device nearby can break an active session or
 # watch its encrypted traffic (docs/SECURITY.md, S-2).
-shared_socket_hint() {
-    v=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null) || return 0
-    dpkg --compare-versions "$v" lt 5.76 || return 0
-    echo "ble-term: with BlueZ $v other Bluetooth LE devices nearby can disconnect an active"
-    echo "  session or observe its encrypted traffic and keystroke timing. BlueZ 5.76 or"
-    echo "  later (e.g. Debian trixie) fixes this."
-}
-
-# BLE sessions run sshd with the system SSH server's configuration
-# (/etc/ble-term/sshd_config includes /etc/ssh/sshd_config). Says what that
-# means for logins, or why sshd would refuse to start.
-policy_hint() {
-    if ! out=$(/usr/sbin/sshd -T -f "$CONF" 2>&1); then
-        echo "ble-term: sshd rejects $CONF; BLE logins will fail until this is fixed:"
-        echo "$out" | sed 's/^/  /'
-        return 0
+check_bluez() {
+    if dpkg --compare-versions "$BLUEZ" lt 5.76; then
+        row BlueZ "$BLUEZ" WARN "nearby devices can break sessions (fix: 5.76)"
+    else
+        row BlueZ "$BLUEZ" OK
     fi
-    get() { echo "$out" | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
-    pw=no
-    if [ "$(get passwordauthentication)" = yes ] || [ "$(get kbdinteractiveauthentication)" = yes ]; then
-        pw=yes
+}
+
+# BlueZ before 5.67 enables EATT; /usr/lib/ble-term/eatt-off turns it off
+# when ble-term.service starts, unless main.conf sets Channels (README,
+# "Bookworm").
+check_eatt() {
+    dpkg --compare-versions "$BLUEZ" lt 5.67 || return 0
+    ch=$(sed -n 's/^[[:space:]]*Channels[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' /etc/bluetooth/main.conf 2>/dev/null | tail -n 1)
+    ecred=$(cat /sys/module/bluetooth/parameters/enable_ecred 2>/dev/null || true)
+    if [ "$ch" = 1 ]; then
+        row EATT "off (Channels = 1)" OK
+    elif [ -n "$ch" ]; then
+        row EATT "on (Channels = $ch)" WARN "phones are asked to pair"
+    elif [ "$ecred" = Y ]; then
+        row EATT on WARN "sudo systemctl restart ble-term"
+    else
+        row EATT "off (kernel ECRED)" OK
     fi
-    echo "ble-term: BLE logins follow the system SSH server's configuration (/etc/ssh/sshd_config):"
-    echo "  passwords: $pw, root login: $(get permitrootlogin)"
-    for k in allowusers allowgroups denyusers denygroups; do
-        v=$(get $k)
-        [ -z "$v" ] || echo "  $k: $v"
-    done
-    echo "  Settings for BLE sessions only go above the Include line in $CONF."
 }
 
-# Up to 0.1.x the package had its own host key; clients pinned it.
-host_key_hint() {
-    [ -n "$1" ] || return 0
-    dpkg --compare-versions "$1" lt 0.2.0 || return 0
-    echo "ble-term: BLE sessions now use the system SSH host keys. Clients that connected"
-    echo "  before see a host key change once; compare the fingerprint below."
+check_bluetooth_service() {
+    if ! systemctl -q is-enabled bluetooth.service 2>/dev/null; then
+        row bluetooth.service disabled FAIL "sudo systemctl enable --now bluetooth"
+    elif systemctl -q is-active bluetooth.service; then
+        row bluetooth.service "enabled, running" OK
+    else
+        row bluetooth.service "enabled, stopped" WARN "ble-term starts it on demand"
+    fi
 }
 
-# Printed on first installation only.
-usage_hint() {
-    echo "ble-term: BLE logins are possible while both units run:"
-    echo "  stop until next boot:  sudo systemctl stop ble-term.service"
-    echo "  start again:           sudo systemctl start ble-term.service"
-    echo "  off permanently:       sudo systemctl disable --now ble-term.service ble-term-session.socket"
-    echo "  on again:              sudo systemctl enable --now ble-term-session.socket ble-term.service"
-    echo "  The server advertises the host name; set another one with BLE_TERM_ARGS=\"--name ...\""
-    echo "  in /etc/default/ble-term and restart ble-term.service."
-}
-
-# Explains why Bluetooth is unusable, if it is. The package does not change
+# Sets ADAPTER_OK when an adapter is usable. The package does not change
 # the rfkill state itself: a block is often deliberate.
-bluetooth_hint() {
+check_adapter() {
+    ADAPTER_OK=
     found=
     for d in /sys/class/bluetooth/hci*; do
         case $d in *:*) continue ;; esac
         [ -e "$d" ] || continue
         found=1
         hci=${d##*/}
+        hard=0 soft=0
         for r in "$d"/rfkill*; do
             [ -r "$r/soft" ] || continue
-            if [ "$(cat "$r/hard")" = 1 ]; then
-                echo "ble-term: Bluetooth adapter $hci is blocked by a hardware switch or the firmware (rfkill hard block)."
-            elif [ "$(cat "$r/soft")" = 1 ]; then
-                echo "ble-term: Bluetooth adapter $hci is off (blocked by rfkill). Switch it on with:"
-                echo "  sudo rfkill unblock bluetooth"
-            fi
+            hard=$(cat "$r/hard") soft=$(cat "$r/soft")
         done
+        if [ "$hard" = 1 ]; then
+            row "Adapter $hci" "blocked (hardware switch)" FAIL "hardware switch or firmware"
+        elif [ "$soft" = 1 ]; then
+            row "Adapter $hci" "blocked (rfkill)" FAIL "sudo rfkill unblock bluetooth"
+        else
+            powered=$(timeout 3 busctl --system get-property org.bluez "/org/bluez/$hci" org.bluez.Adapter1 Powered 2>/dev/null || true)
+            case $powered in
+            "b true") row "Adapter $hci" on OK; ADAPTER_OK=1 ;;
+            "b false") row "Adapter $hci" off WARN "bluetoothctl power on" ;;
+            *) row "Adapter $hci" present OK; ADAPTER_OK=1 ;;
+            esac
+        fi
     done
-    if [ -z "$found" ]; then
-        echo "ble-term: no Bluetooth adapter found; ble-term-daemon will wait for one."
+    [ -n "$found" ] || row Adapter "none found" WARN "ble-term waits for one"
+}
+
+check_sshd() {
+    if /usr/sbin/sshd -t -f "$CONF" 2>/dev/null; then
+        row "sshd configuration" valid OK
+    else
+        row "sshd configuration" rejected FAIL "sudo sshd -t -f $CONF"
     fi
+}
+
+check_daemon() {
+    if ! systemctl -q is-active ble-term.service; then
+        row ble-term "not running" FAIL "journalctl -u ble-term"
+    elif [ -z "$ADAPTER_OK" ]; then
+        row ble-term "running, waiting" WARN "starts serving once the adapter is on"
+    else
+        row ble-term running OK
+    fi
+}
+
+# Up to 0.1.x the package had its own host key; clients pinned it.
+check_host_key_change() {
+    [ -n "$1" ] || return 0
+    dpkg --compare-versions "$1" lt 0.2.0 || return 0
+    row "Host key" "changed since 0.1.x" NOTE "clients see a key change once"
+}
+
+# BLE sessions run sshd with the system SSH server's configuration
+# (/etc/ble-term/sshd_config includes /etc/ssh/sshd_config).
+summary() {
+    if [ -f "$KEY" ]; then
+        fp=$(ssh-keygen -l -f "$KEY" | awk '{ print $2 }')
+        printf '  %-8s  %s\n' "Host key" "$fp (same as network SSH)"
+    fi
+    if out=$(/usr/sbin/sshd -T -f "$CONF" 2>/dev/null); then
+        get() { echo "$out" | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
+        pw=no
+        if [ "$(get passwordauthentication)" = yes ] || [ "$(get kbdinteractiveauthentication)" = yes ]; then
+            pw=yes
+        fi
+        policy="passwords $pw, root $(get permitrootlogin)"
+        for k in AllowUsers AllowGroups DenyUsers DenyGroups; do
+            v=$(get "$(echo $k | tr A-Z a-z)")
+            [ -z "$v" ] || policy="$policy, $k $v"
+        done
+        printf '  %-8s  %s\n' Policy "as network SSH: $policy"
+    fi
+    printf '  %-8s  %s\n' Override "$CONF"
+}
+
+# Printed on first installation only.
+commands() {
+    echo
+    printf '  %-8s  %-8s  %s\n' Commands stop "sudo systemctl stop ble-term"
+    printf '  %-8s  %-8s  %s\n' "" start "sudo systemctl start ble-term"
+    printf '  %-8s  %-8s  %s\n' "" disable "sudo systemctl disable --now ble-term ble-term-session.socket"
+    printf '  %-8s  %-8s  %s\n' "" enable "sudo systemctl enable --now ble-term-session.socket ble-term"
+    printf '  %-8s  %-8s  %s\n' "" rename "BLE_TERM_ARGS=\"--name NAME\" in /etc/default/ble-term, then restart"
 }
 
 if [ "$1" = configure ]; then
     systemd-sysusers ble-term.conf
     systemd-tmpfiles --create ble-term.conf || true
+    systemd=
     if [ -d /run/systemd/system ]; then
+        systemd=1
         # The D-Bus policy names _bleterm; the bus ignores it if it read the
         # file before systemd-sysusers created the user.
         systemctl reload dbus.service 2>/dev/null || true
@@ -96,21 +158,21 @@ if [ "$1" = configure ]; then
         # D-Bus activation if bluetooth.service is enabled.
         if systemctl -q is-active bluetooth.service || systemctl -q is-enabled bluetooth.service; then
             systemctl restart ble-term.service
-        else
-            echo "ble-term: bluetooth.service is disabled, so BLE logins are not possible. Enable it with:"
-            echo "  sudo systemctl enable --now bluetooth.service && sudo systemctl start ble-term.service"
         fi
     fi
-    host_key_hint "$2"
-    if [ -f "$KEY" ]; then
-        echo "ble-term: SSH host key fingerprint (the same as for network SSH):"
-        ssh-keygen -l -f "$KEY" | sed 's/^/  /'
-    fi
-    policy_hint
-    bluetooth_hint
-    shared_socket_hint
+
+    echo "ble-term $(dpkg-query -W -f '${Version}' ble-term): SSH over Bluetooth LE"
+    check_bluez
+    check_eatt
+    [ -z "$systemd" ] || check_bluetooth_service
+    check_adapter
+    check_sshd
+    [ -z "$systemd" ] || check_daemon
+    check_host_key_change "$2"
+    echo
+    summary
     if [ -z "$2" ]; then
-        usage_hint
+        commands
     fi
 fi
 

@@ -104,7 +104,7 @@ ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-b
 | S7 | Exit and reconnect | `exit` ends the session; connecting again works without restarting anything |
 | S8 | Link loss | Bluetooth off on the client, or out of range, mid-session: the session ends on the server (`who`; the journal shows `session …: ended`) and a later connect works |
 | S9 | Second client | A second client while one is connected is refused with "another client is connected"; the first session is unaffected |
-| S10 | Server reboot | After a reboot the units start, the server is discoverable, login works |
+| S10 | Server reboot | After a reboot (and a `systemctl soft-reboot`, where the system uses it) the units start, the server is discoverable, login works |
 | S11 | Bluetooth off and on on the server | `bluetoothctl power off`, then `on`: the server becomes discoverable again and login works |
 | S12 | Audit log | `journalctl -u ble-term` has session start and end lines with the device address and session id; the matching `ble-term-session@*` unit has the same id followed by the sshd login line |
 | S13 | Upgrade | Installing a newer package over the old one ends the active session (expected) and the server works afterwards |

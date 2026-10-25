@@ -51,9 +51,11 @@ sudo apt install ./ble-term_<version>_arm64.deb
 
 The package creates the `_bleterm` user (allowed only the BlueZ calls the
 daemon needs, through a D-Bus policy), enables and starts
-`ble-term-session.socket` and `ble-term.service`, and prints the SSH host
-key fingerprint and the login policy BLE sessions get. Show the fingerprint
-again with
+`ble-term-session.socket` and `ble-term.service`, and prints a table of
+checks (BlueZ version, Bluetooth service and adapter, sshd configuration,
+daemon; each with OK, WARN or FAIL and what to do), the SSH host key
+fingerprint and the login policy BLE sessions get. `sudo dpkg-reconfigure
+ble-term` prints it again. Show the fingerprint alone with
 
 ```
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
@@ -86,7 +88,7 @@ phones use private BLE addresses that change every few minutes, so the
 address identifies a connection rather than a phone.
 
 Upgrades restart the daemon, which ends an active BLE session; the client
-has to reconnect.
+is told that the server is shutting down and has to reconnect.
 
 BLE logins are possible while `ble-term.service` and
 `ble-term-session.socket` run. Stop until the next boot:
@@ -99,6 +101,21 @@ server package (only the `sshd` binary is used), systemd. The Bluetooth adapter
 must be on; the daemon waits for it and logs what to do if it is blocked by
 rfkill (`sudo rfkill unblock bluetooth`) or powered off
 (`bluetoothctl power on`). The package does not change the rfkill state.
+
+`ble-term.service` starts with `bluetooth.target` and, for boots where that
+target does not come up (a systemd soft-reboot, where the adapter is
+already there), with `multi-user.target`; it then starts bluetoothd through
+D-Bus activation if `bluetooth.service` is enabled.
+
+### Desktop systems
+
+Desktop Bluetooth settings (KDE, GNOME, blueman) switch the adapter off or
+block it with rfkill, and restore that state at login; ble-term then waits
+until Bluetooth is on again. Some desktops record "off" by mistake when the
+system shuts down, because bluetoothd stops before the desktop session; the
+adapter is then off after every reboot. Fix it in the desktop settings
+(KDE: Bluetooth, "When logging in": enable Bluetooth) or in the system
+(`After=bluetooth.service` for `user@.service`, so sessions stop first).
 
 ## Security
 

@@ -26,7 +26,13 @@ use bluer::{
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
 use log::{debug, error, info, warn};
-use tokio::{io::AsyncWriteExt, net::UnixStream, sync::mpsc, task::JoinHandle, time::Instant};
+use tokio::{
+    io::AsyncWriteExt,
+    net::UnixStream,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+    time::Instant,
+};
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "SSH over Bluetooth LE: BlueZ GATT server")]
@@ -138,7 +144,9 @@ fn power_hint(adapter: &str) -> String {
     if flag("hard") {
         "it is blocked by a hardware switch or the firmware (rfkill hard block)".into()
     } else if flag("soft") {
-        "it is blocked by rfkill; unblock it with `sudo rfkill unblock bluetooth`".into()
+        "it is blocked by rfkill; unblock it with `sudo rfkill unblock bluetooth` \
+         (on a desktop, its Bluetooth settings may block it again at login)"
+            .into()
     } else {
         "switch it on with `bluetoothctl power on`".into()
     }
@@ -188,6 +196,8 @@ async fn wait_powered(adapter: &Adapter) -> bluer::Result<()> {
 }
 
 const HALF_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a stopping daemon waits for the active session to send CLOSE.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 /// How a session ended, for the main loop.
 struct SessionEnd {
@@ -296,6 +306,8 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut deferred_disconnect: Option<(Address, Instant)> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // Tells the active session that the daemon is stopping.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     loop {
         tokio::select! {
@@ -451,16 +463,28 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
             let adapter = adapter.clone();
             let args = args.clone();
+            let shutdown = shutdown_rx.clone();
             active = Some((
                 addr,
-                tokio::spawn(async move { run_session(adapter, addr, reader, writer, args).await }),
+                tokio::spawn(async move {
+                    run_session(adapter, addr, reader, writer, args, shutdown).await
+                }),
             ));
         }
     }
 
     info!("shutting down");
-    if let Some((_, task)) = active {
-        task.abort();
+    if let Some((addr, mut task)) = active {
+        // The session sends CLOSE, so the client learns why it ended instead
+        // of keeping an idle link to a server that is gone.
+        let _ = shutdown_tx.send(true);
+        if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
+        disconnect_now(&adapter, addr).await;
     }
     drop(adv);
     Ok(())
@@ -478,6 +502,24 @@ fn disconnect(adapter: &Adapter, addr: Address) {
             }
         }
     });
+}
+
+/// Ends the link of a stopping daemon: gives the client a moment to read
+/// CLOSE and disconnect by itself, then disconnects it.
+async fn disconnect_now(adapter: &Adapter, addr: Address) {
+    if tokio::time::timeout(SHUTDOWN_GRACE, disconnected(adapter, addr))
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    if let Ok(dev) = adapter.device(addr) {
+        match tokio::time::timeout(Duration::from_secs(2), dev.disconnect()).await {
+            Ok(Err(e)) => debug!("{addr}: disconnect failed: {e}"),
+            Err(_) => debug!("{addr}: disconnect timed out"),
+            Ok(Ok(())) => {}
+        }
+    }
 }
 
 async fn is_connected(adapter: &Adapter, addr: Address) -> bool {
@@ -566,6 +608,7 @@ async fn run_session(
     mut reader: CharacteristicReader,
     writer: Arc<CharacteristicWriter>,
     args: Args,
+    mut shutdown: watch::Receiver<bool>,
 ) -> SessionEnd {
     let mut tx = writer.clone();
     let mut link = Link::new(writer.mtu(), args.window);
@@ -638,6 +681,15 @@ async fn run_session(
         };
         info!("{addr}: session {id}: SSH session started");
         let gone = link_gone(adapter.clone(), addr, writer.clone());
+        let stopping = async {
+            let _ = shutdown.wait_for(|s| *s).await;
+        };
+        let gone = async {
+            tokio::select! {
+                _ = gone => {}
+                _ = stopping => {}
+            }
+        };
         bridge::run(&mut link, &mut reader, &mut tx, stream, initial, gone)
             .await
             .map(Some)
@@ -657,6 +709,15 @@ async fn run_session(
             ),
             false,
         ),
+        Ok(Some(Outcome::Cancelled)) if *shutdown.borrow() => {
+            link.close(CloseReason::SessionUnavailable, "server is shutting down");
+            while let Some(p) = link.poll_transmit() {
+                if tx.send(&p).await.is_err() {
+                    break;
+                }
+            }
+            ("server is shutting down".into(), false)
+        }
         Ok(Some(Outcome::LinkLost | Outcome::Cancelled)) => ("client disconnected".into(), true),
         Ok(None) => ("session unavailable".into(), false),
         Err(BridgeError::Protocol(e)) => {
