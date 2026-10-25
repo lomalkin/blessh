@@ -14,6 +14,22 @@ version.
 | 2026-10-24 | Raspberry Pi 5 Model B Rev 1.1 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-2712 | 5.82-1.1+rpt2 | 10.0p1 | 0.1.2-1 arm64 | Google Pixel 8 Pro, GrapheneOS (Android 17) | pass | pass | pass | — | — | — | pass | — | — | — | — | — | — | — | Fresh install of 0.1.2-1; Bluetooth was not blocked |
 | 2026-10-24 | Raspberry Pi Zero 2 W Rev 1.0 | Raspberry Pi OS (Debian 12 bookworm), 64-bit, image 2026-10-06 | 6.12.109+rpt-rpi-v8 | 5.66-1+rpt2+deb12u2 | 9.2p1 | 0.1.2-1 arm64 | Google Pixel 8 Pro, GrapheneOS (Android 17) | pass | pass | pass | — | — | pass | pass | — | — | — | pass | pass | pass | — | Needs `Channels = 1` in `/etc/bluetooth/main.conf` (BlueZ 5.66 EATT: pairing request and dropped connections otherwise). BlueZ 5.66 ignores the advertising interval (stays 1.28 s). Raspberry Pi OS **trixie** could not join any Wi-Fi on this board (802.11 authentication timeout, also with a phone hotspot); bookworm works |
 
+## Bench to bench
+
+`tests/e2e-bench.sh` between two bench machines (tier 2 in
+[testing.md](testing.md)): `ble-term-connect` on the first, the server on
+the second.
+
+| Date | Client → server | Package | Result | Notes |
+|---|---|---|---|---|
+| 2026-10-25 | Pi 3 B+ (trixie, BlueZ 5.82) → Pi Zero 2 W (bookworm, BlueZ 5.66) | 0.1.3~ci37 arm64 | 10/10 | 30 KB each way, 1.0–1.3 KB/s (48.75 ms connection interval, no data length extension on these controllers) |
+| 2026-10-25 | Pi Zero 2 W → Pi 3 B+ | 0.1.3~ci37 arm64 | 8/10, repeat pass | The first two cases right after the previous direction lost the link before GATT (no session on the server); repeated: 6/6 sessions back to back |
+| 2026-10-25 | Pi 5 → Pi 3 B+, Pi 5 → Pi Zero 2 W | 0.1.3~ci33 arm64 | fail | Connection setup fails (`le-connection-abort-by-local`); the server role works. This board also has an unresolved 5 GHz Wi-Fi problem; not treated as a ble-term bug |
+
+Earlier builds failed sessions started right after a previous one (fixed in
+0.1.3: sockets of a link that went down, leftovers before HELLO, two
+clients on one link).
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |

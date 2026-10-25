@@ -33,7 +33,8 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 | Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani --no-default-features --lib` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
-| Bench: install and upgrade, client and server over the radio (`ble-term-connect` on one bench node, server on another) | the cases below that need no phone |
+| Bench: client and server over the radio (`ble-term-connect` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB) |
+| Bench: install and upgrade | S1, S13 and the other cases below that need no phone |
 
 Bench nodes are shared: before a run, say which nodes it uses and for how
 long, and nobody else touches them until the run is reported finished.
