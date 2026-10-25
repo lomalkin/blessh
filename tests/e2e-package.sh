@@ -29,6 +29,8 @@ ble() { /usr/sbin/sshd -T -f /etc/ble-term/sshd_config | awk -v k="$1" '$1 == k 
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y --no-install-recommends "$DEB" > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
+# apt runs dpkg on a pseudo-terminal: lines end in CR LF.
+tr -d '\r' < "$T/install.log" > "$T/install.txt" && mv "$T/install.txt" "$T/install.log"
 sed -n '/^Setting up ble-term/,$p' "$T/install.log"
 
 [ ! -e /etc/ble-term/ssh_host_ed25519_key ]
