@@ -1,0 +1,31 @@
+#!/bin/sh
+# Keeps BlueZ before 5.67 from opening EATT to phones (README, "Bookworm").
+#
+# Those versions default to Channels = 3: after a phone connects,
+# bluetoothd opens an EATT channel to it, the phone refuses it on an
+# unencrypted link, bluetoothd asks it to pair, and the connection usually
+# drops. BlueZ 5.67 turned EATT off by default (Channels = 1). Instead of
+# editing bluez's main.conf, this turns off the kernel's enhanced credit
+# based L2CAP mode (ECRED), which EATT needs and nothing else in these
+# BlueZ versions uses outside experimental LE Audio. bluetoothd opens EATT
+# per connection, so it does not need a restart.
+#
+# Runs as root before ble-term-daemon starts. An explicit Channels setting
+# in main.conf is the administrator's choice and is left alone. The
+# setting lasts until reboot; removing the package restores it.
+#
+# BLE_TERM_ECRED and BLE_TERM_STATE exist for tests.
+PARAM=${BLE_TERM_ECRED:-/sys/module/bluetooth/parameters/enable_ecred}
+STATE=${BLE_TERM_STATE:-/run/ble-term-ecred-off}
+
+v=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null) || exit 0
+dpkg --compare-versions "$v" lt 5.67 || exit 0
+if grep -Eq '^[[:space:]]*Channels[[:space:]]*=' /etc/bluetooth/main.conf 2>/dev/null; then
+    exit 0
+fi
+[ "$(cat "$PARAM" 2>/dev/null)" = Y ] || exit 0
+if echo N > "$PARAM"; then
+    touch "$STATE"
+    echo "BlueZ $v enables EATT, which makes phones ask to pair; turned off ECRED L2CAP mode until reboot (EATT is off by default since BlueZ 5.67)"
+fi
+exit 0

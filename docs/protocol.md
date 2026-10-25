@@ -38,8 +38,9 @@ assumes a single ATT bearer: the connection's unenhanced ATT bearer. With
 several bearers (EATT), frames can overtake each other by any number of
 positions, so v1 does not support EATT; both sides should have it off
 (BlueZ: `Channels = 1` in the `[GATT]` section of `main.conf`, the default
-since 5.67; phones open EATT only on encrypted links, and ble-term links
-are not encrypted).
+since 5.67; on older BlueZ the server package keeps EATT off by turning off
+the kernel's ECRED mode; phones open EATT only on encrypted links, and
+ble-term links are not encrypted).
 
 ## Frames
 

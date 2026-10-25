@@ -16,7 +16,9 @@ phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──
 
 * **No BlueZ reconfiguration.** The daemon registers a GATT service and an
   advertisement over D-Bus; no `main.conf` changes, no `--experimental`, no
-  pairing agent. Other Bluetooth devices and services keep working.
+  pairing agent. Other Bluetooth devices and services keep working. (On
+  BlueZ before 5.67 EATT is kept off through a kernel setting, see
+  "Bookworm" below.)
 * **No pairing.** Security comes from SSH: the client pins the host key,
   users log in with their system password (PAM) or `~/.ssh/authorized_keys`.
 * **One more way into the system SSH server.** BLE sessions get the
@@ -117,19 +119,35 @@ authentication and encryption. Recommended:
 
 Threat model, findings and checks: [docs/SECURITY.md](docs/SECURITY.md).
 
-## Bookworm (BlueZ 5.66): pairing request and dropped connections
+## Bookworm (BlueZ 5.66): EATT and pairing requests
 
-BlueZ before 5.67 enables EATT by default. When a phone connects,
-bluetoothd opens an extra EATT channel to it; the phone refuses it without
-encryption and bluetoothd asks the phone to pair. ble-term does not use
-pairing, so whatever the user answers (cancel, pair or ignore), the
-connection drops within seconds. Later BlueZ versions disable EATT by
-default (upstream commit "main: Disable EATT by default", 5.67).
+BlueZ before 5.67 enables EATT (several ATT channels per connection,
+`Channels = 3`) by default. When a phone connects, bluetoothd opens an extra
+EATT channel to it; the phone accepts EATT only on an encrypted link, so
+bluetoothd asks the phone to pair. ble-term does not use pairing. Cancel or
+no answer drops the connection (no answer: after 30 s); accepting fails
+("pairing rejected") but the session survives, and the request returns once
+the phone changes its random address. BlueZ 5.67 turned EATT off
+by default (upstream commit "main: Disable EATT by default"), so Debian 13
+and later are not affected.
 
-Fix: add `Channels = 1` to the `[GATT]` section of
-`/etc/bluetooth/main.conf` and run `sudo systemctl restart bluetooth`. This
-is the default of every later BlueZ release. The package does not change
-bluez's configuration; on BlueZ < 5.67 the installer prints this hint.
+ble-term handles this itself. On BlueZ before 5.67, `ble-term.service`
+first runs `/usr/lib/ble-term/eatt-off`, which turns off the kernel's
+enhanced credit based L2CAP mode (ECRED, the
+`enable_ecred` parameter of the `bluetooth` module). EATT needs it, so
+bluetoothd's EATT attempt fails quietly and the phone is never asked to
+pair: the same behaviour as BlueZ 5.67 and later. Neither bluez's
+configuration nor bluetoothd is touched; the journal of `ble-term.service`
+says when this happens. Effects and limits:
+
+* Lasts until reboot and is renewed on every start of the service;
+  removing the package turns ECRED back on.
+* Applies to the whole system. On these BlueZ versions only EATT and the
+  experimental LE Audio support use ECRED.
+* An explicit `Channels` setting in the `[GATT]` section of
+  `/etc/bluetooth/main.conf` is left alone: `Channels = 1` already turns
+  EATT off; a larger value means the administrator wants EATT, and phones
+  will then be asked to pair.
 
 ## Desktop client
 
@@ -141,8 +159,9 @@ ble-term-connect --scan                       # list servers
 ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' -o HostKeyAlias=my-pi user@my-pi
 ```
 
-The client machine needs EATT off as well (`Channels = 1`, see above; the
-default since BlueZ 5.67); `ble-term-connect` warns if it is on.
+The client machine needs EATT off as well (`Channels = 1` in the `[GATT]`
+section of `/etc/bluetooth/main.conf`, the default since BlueZ 5.67);
+`ble-term-connect` warns if it is on.
 
 ## Development
 

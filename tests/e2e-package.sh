@@ -60,6 +60,24 @@ check "setting above the Include applies to BLE" $?
 check "... and not to the network SSH server" $?
 rm /etc/ssh/sshd_config.d/00-test.conf
 
+# EATT: off on BlueZ < 5.67 through the kernel's ECRED switch (a stand-in
+# file here), untouched on later BlueZ or with an explicit Channels setting.
+eatt() { echo Y > "$T/ecred"; rm -f "$T/state"; BLE_TERM_ECRED="$T/ecred" BLE_TERM_STATE="$T/state" /usr/lib/ble-term/eatt-off > /dev/null; cat "$T/ecred"; }
+if dpkg --compare-versions "$(dpkg-query -W -f '${Version}' bluez)" lt 5.67; then
+    [ "$(eatt)" = N ] && [ -e "$T/state" ]
+    check "ECRED off on BlueZ < 5.67" $?
+    cp /etc/bluetooth/main.conf "$T/main.conf"
+    sed -i 's/^\[GATT\]$/[GATT]\nChannels = 3/' /etc/bluetooth/main.conf
+    [ "$(eatt)" = Y ]
+    check "... unless main.conf sets Channels" $?
+    cp "$T/main.conf" /etc/bluetooth/main.conf
+else
+    [ "$(eatt)" = Y ]
+    check "ECRED left alone on BlueZ >= 5.67" $?
+fi
+grep -q 'ExecStartPre=+/usr/lib/ble-term/eatt-off' /lib/systemd/system/ble-term.service
+check "service runs eatt-off" $?
+
 apt-get purge -y ble-term > "$T/purge.log" 2>&1 || { cat "$T/purge.log"; exit 1; }
 [ ! -e /etc/ble-term ] && [ ! -e /etc/default/ble-term ]
 check "purge removes the configuration" $?

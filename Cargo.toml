@@ -1,6 +1,6 @@
 [package]
 name = "ble-term"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.75"
 description = "SSH sessions over Bluetooth Low Energy for Linux/BlueZ"
@@ -68,7 +68,9 @@ ble-term exposes an SSH server over Bluetooth Low Energy. A small unprivileged \
 daemon registers a GATT service with BlueZ over D-Bus and forwards each BLE \
 connection to a per-connection `sshd -i` started by systemd socket activation. \
 No changes to the BlueZ configuration are made and the adapter is not taken \
-over, so other Bluetooth services keep working."""
+over, so other Bluetooth services keep working. With BlueZ before 5.67 the \
+kernel's ECRED L2CAP mode is turned off while installed, which keeps EATT \
+off as in later BlueZ versions."""
 depends = "bluez (>= 5.55), openssh-server, systemd"
 section = "net"
 priority = "optional"
@@ -78,6 +80,7 @@ assets = [
     ["target/release/ble-term-daemon", "usr/sbin/", "755"],
     ["target/release/ble-term-connect", "usr/bin/", "755"],
     ["target/release/ble-term-session", "usr/lib/ble-term/", "755"],
+    ["packaging/eatt-off", "usr/lib/ble-term/", "755"],
     ["packaging/sshd_config", "etc/ble-term/sshd_config", "644"],
     ["packaging/default", "etc/default/ble-term", "644"],
     ["packaging/systemd/ble-term.service", "lib/systemd/system/", "644"],
