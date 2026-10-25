@@ -41,4 +41,9 @@ SystemCallFilter=@system-service
 UMask=0077
 
 [Install]
-WantedBy=bluetooth.target
+# bluetooth.target comes up when the adapter appears; multi-user.target
+# covers boots where it does not, e.g. after a soft-reboot, when the adapter
+# is already there. The daemon's first call to org.bluez then starts
+# bluetoothd through D-Bus activation, which only works while
+# bluetooth.service is enabled.
+WantedBy=bluetooth.target multi-user.target

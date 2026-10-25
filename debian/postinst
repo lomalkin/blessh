@@ -92,8 +92,13 @@ if [ "$1" = configure ]; then
         systemctl daemon-reload
         systemctl enable ble-term-session.socket ble-term.service >/dev/null
         systemctl restart ble-term-session.socket
-        if systemctl -q is-active bluetooth.service; then
+        # Also when bluetoothd is not running: the daemon starts it through
+        # D-Bus activation if bluetooth.service is enabled.
+        if systemctl -q is-active bluetooth.service || systemctl -q is-enabled bluetooth.service; then
             systemctl restart ble-term.service
+        else
+            echo "ble-term: bluetooth.service is disabled, so BLE logins are not possible. Enable it with:"
+            echo "  sudo systemctl enable --now bluetooth.service && sudo systemctl start ble-term.service"
         fi
     fi
     host_key_hint "$2"
