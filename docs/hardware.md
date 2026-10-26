@@ -33,6 +33,10 @@ Notes on devices:
   while a client is connected; it advertises again after the disconnect. The
   Raspberry Pi controllers keep advertising. Harmless with one session at a
   time.
+* **Flipper One F2, Desktop and Minimal images:** WirePlumber publishes BLE
+  MIDI; bench nodes with BlueZ's MIDI plugin then try to pair with it and
+  the link drops, with the Flipper as server or as client (README, "Desktop
+  client"). Stop WirePlumber for bench runs; phones are not affected.
 * **Raspberry Pi Zero 2 W:** logins take 3 to 11 s over BLE (Pi 3 B+ and
   Pi 5: 3 to 4 s). The link runs at a 48.75 ms connection interval without
   data length extension, and the controller sends about one 27 byte packet
