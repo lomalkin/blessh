@@ -160,6 +160,9 @@ if [ "$1" = configure ]; then
         fi
     fi
 
+    # sshd -t / -T need sshd's privilege separation directory; sessions get it
+    # from ble-term-session@.service, but ssh.service may never have run.
+    install -d -m 0755 /run/sshd
     echo "ble-term $(dpkg-query -W -f '${Version}' ble-term): SSH over Bluetooth LE"
     check_bluez
     check_eatt
