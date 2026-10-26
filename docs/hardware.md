@@ -26,6 +26,10 @@ version.
 | 2026-10-25 | Raspberry Pi Zero 2 W Rev 1.0 | Raspberry Pi OS (Debian 12 bookworm), 64-bit, image 2026-10-06 | 6.12.109+rpt-rpi-v8 | 5.66-1+rpt2+deb12u2 | 9.2p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Without `Channels = 1`: the package turns ECRED off (also after reboot); phone gets no pairing request. Upgrade, purge, clean install |
 | 2026-10-25 | Raspberry Pi 5 Model B Rev 1.1 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-2712 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | — | — | pass | pass | — | Upgrade, purge, clean install; server role only |
 | 2026-10-25 | Flipper One F2 (prototype; Rockchip RK3576, MediaTek MT7921 USB Bluetooth) | FlipperOS (Debian 13 trixie), Minimal profile (no desktop) | 7.3.0-rc7 | 5.82-1.1 | 10.0p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Reboot and soft-reboot pass. CLOSE on shutdown: the client gets "server is shutting down". WirePlumber publishes BLE MIDI, which makes BlueZ clients try to pair and hang (README, "Desktop client"); stopped for the client runs |
+| 2026-10-26 | Raspberry Pi 3 Model B+ Rev 1.3 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-v8 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.2-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | pass | Upgrade over 0.2.1, then purge and clean install. With `ssh.service` stopped, BLE logins work (`/run/sshd` comes from the session unit). S14: an idle session stayed alive for 65 min. After about 6.6 h of heavy bench use the controller reported "hardware error 0x00" and stayed off until a reboot (see the device notes) |
+| 2026-10-26 | Raspberry Pi Zero 2 W Rev 1.0 | Raspberry Pi OS (Debian 12 bookworm), 64-bit, image 2026-10-06 | 6.12.109+rpt-rpi-v8 | 5.66-1+rpt2+deb12u2 | 9.2p1 | 0.2.2-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Upgrade, purge, clean install; without `Channels = 1` (the package turns ECRED off) |
+| 2026-10-26 | Raspberry Pi 5 Model B Rev 1.1 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-2712 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.2-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | — | — | pass | pass | pass | Upgrade, purge, clean install; server role only. S14: a session with output every 30 s for 70 min, all lines received |
+| 2026-10-26 | Flipper One F2 (prototype; Rockchip RK3576, MediaTek MT7921 USB Bluetooth) | FlipperOS (Debian 13 trixie), Minimal profile (no desktop) | 7.3.0-rc7 | 5.82-1.1 | 10.0p1 | 0.2.2-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Upgrade, purge, clean install, reboot. 100 sessions back to back from the Pi Zero 2 W: 100/100. WirePlumber stopped for the runs |
 
 Notes on devices:
 
@@ -37,6 +41,9 @@ Notes on devices:
   MIDI; bench nodes with BlueZ's MIDI plugin then try to pair with it and
   the link drops, with the Flipper as server or as client (README, "Desktop
   client"). Stop WirePlumber for bench runs; phones are not affected.
+* **Raspberry Pi 3 B+:** after hours of heavy bench use its controller
+  (BCM43455 on UART) once reported "hardware error 0x00"; the reset failed
+  and the adapter stayed off until a reboot. Not seen on the other boards.
 * **Raspberry Pi Zero 2 W:** logins take 3 to 11 s over BLE (Pi 3 B+ and
   Pi 5: 3 to 4 s). The link runs at a 48.75 ms connection interval without
   data length extension, and the controller sends about one 27 byte packet
@@ -62,10 +69,17 @@ the second.
 | 2026-10-25 | Flipper One F2 → Pi Zero 2 W | 0.2.1~ci52 arm64 | 9/10 | "5 sessions back to back": one link loss, as on earlier first runs after a direction change |
 | 2026-10-25 | Pi Zero 2 W → Pi 3 B+ | 0.2.1~ci52 arm64 | 9/10 | All sessions pass; the failed check is the client's EATT warning, which ignored the ECRED switch (fixed before the release) |
 | 2026-10-25 | Pi 3 B+ → Pi 5 | 0.2.1~ci52 arm64 | 10/10 | 5.4–6.1 KB/s |
+| 2026-10-26 | Pi 3 B+ → Flipper One F2 | 0.2.2-1 arm64 | 10/10 | |
+| 2026-10-26 | Flipper One F2 → Pi Zero 2 W | 0.2.2-1 arm64 | 10/10 | Release candidate: 8/10 and 3 of 25 back-to-back sessions cut about 2 s in, by the server's deferred disconnect of the previous link (fixed before the release); release: 10/10 |
+| 2026-10-26 | Pi Zero 2 W → Pi 3 B+ | 0.2.2-1 arm64 | 10/10 | |
+| 2026-10-26 | Pi 3 B+ → Pi 5 | 0.2.2-1 arm64 | 10/10 | |
+| 2026-10-26 | Pi Zero 2 W → Flipper One F2 | 0.2.2-1 arm64 | 100/100 | Sessions back to back (`echo`) |
 
 Earlier builds failed sessions started right after a previous one (fixed in
 0.1.3: sockets of a link that went down, leftovers before HELLO, two
-clients on one link).
+clients on one link; fixed in 0.2.2: the server disconnected a client that
+had already reconnected on a new link, about 10 s after its previous
+session).
 
 ## Clients
 
