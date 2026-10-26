@@ -21,7 +21,7 @@ use bluer::{
         },
         CharacteristicReader, CharacteristicWriter,
     },
-    Adapter, Address, AddressType, DeviceEvent, DeviceProperty,
+    Adapter, Address, AddressType, DeviceEvent, DeviceProperty, SessionEvent,
 };
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
@@ -288,11 +288,14 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }],
         ..Default::default()
     };
+    // BlueZ drops the registrations when the adapter goes away (unplugged,
+    // reset by the USB stack) and does not restore them when it comes back.
+    let adapter_events = session.events().await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name).await?);
     info!("ready (BlueZ GATT application and advertisement registered)");
 
-    tokio::pin!(rx_control, tx_control);
+    tokio::pin!(rx_control, tx_control, adapter_events);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<u64>();
@@ -318,6 +321,13 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             _ = sigterm.recv() => break,
             _ = tokio::signal::ctrl_c() => break,
+            Some(ev) = adapter_events.next() => {
+                if matches!(&ev, SessionEvent::AdapterRemoved(n) if n == adapter.name()) {
+                    // Exit with an error: systemd restarts the daemon, which
+                    // waits for the adapter and registers again.
+                    return Err(format!("Bluetooth adapter {} was removed", adapter.name()).into());
+                }
+            }
             ev = rx_control.next() => match ev {
                 Some(CharacteristicControlEvent::Write(req)) => {
                     let addr = req.device_address();
