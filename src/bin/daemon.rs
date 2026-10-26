@@ -304,6 +304,11 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut parked: Option<Arc<CharacteristicWriter>> = None;
     // Device to disconnect once its session has ended, unless it reconnects first.
     let mut deferred_disconnect: Option<(Address, Instant)> = None;
+    // Cancels that disconnect when the link goes down by itself first: a
+    // client that disconnects and connects again for the next session must
+    // not lose its new link, which the timer cannot tell from the old one.
+    let (left_tx, mut left_rx) = mpsc::unbounded_channel::<Address>();
+    let mut left_watch: Option<JoinHandle<()>> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // Tells the active session that the daemon is stopping.
@@ -380,6 +385,12 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Some(_) => {}
                 None => return Err("GATT application was unregistered".into()),
             },
+            Some(addr) = left_rx.recv() => {
+                if deferred_disconnect.is_some_and(|(a, _)| a == addr) {
+                    debug!("{addr}: link went down after the session, no disconnect needed");
+                    deferred_disconnect = None;
+                }
+            }
             Some(id) = gone_rx.recv() => {
                 if id == pending.id {
                     if let Some(addr) = pending.address() {
@@ -399,6 +410,14 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     // when the user reconnects right away; the delay keeps the
                     // window in which that races with our disconnect small.
                     deferred_disconnect = Some((addr, Instant::now() + Duration::from_secs(10)));
+                    if let Some(w) = left_watch.take() {
+                        w.abort();
+                    }
+                    let (adapter, left) = (adapter.clone(), left_tx.clone());
+                    left_watch = Some(tokio::spawn(async move {
+                        disconnected(&adapter, addr).await;
+                        let _ = left.send(addr);
+                    }));
                 }
                 // The kernel resumes advertising on disconnect; re-registering
                 // here raced with reconnecting clients in tests, so it is opt-in.
