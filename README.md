@@ -124,10 +124,11 @@ the BLE link is neither paired nor encrypted, and SSH provides
 authentication and encryption. Recommended:
 
 * Compare the host key fingerprint on the first connection.
-* Use public keys and turn passwords off (`PasswordAuthentication no`,
-  `KbdInteractiveAuthentication no` in the system SSH configuration; this
-  applies to BLE too). If passwords stay on, use strong ones; sshd cannot
-  rate-limit BLE clients by source.
+* Log in with public keys only: turn passwords off
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no` in the
+  system SSH configuration; this applies to BLE too). Anyone in radio range
+  can try passwords, and sshd cannot rate-limit BLE clients by source
+  (docs/SECURITY.md, S-4).
 * Limit who may log in over BLE only with `AllowGroups` above the
   `Include` line in `/etc/ble-term/sshd_config`.
 * Use BlueZ 5.76 or later (Debian trixie). With older BlueZ, other BLE

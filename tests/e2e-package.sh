@@ -84,6 +84,8 @@ else
 fi
 grep -q 'ExecStartPre=+/usr/lib/ble-term/eatt-off' /usr/lib/systemd/system/ble-term.service
 check "service runs eatt-off" $?
+grep -qx 'RuntimeDirectory=sshd' /usr/lib/systemd/system/ble-term-session@.service && [ ! -e /usr/lib/tmpfiles.d/ble-term.conf ]
+check "session unit creates /run/sshd (no tmpfiles line)" $?
 
 apt-get purge -y ble-term > "$T/purge.log" 2>&1 || { cat "$T/purge.log"; exit 1; }
 [ ! -e /etc/ble-term ] && [ ! -e /etc/default/ble-term ]

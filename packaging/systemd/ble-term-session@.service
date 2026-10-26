@@ -12,3 +12,8 @@ ExecStart=-/usr/lib/ble-term/ble-term-session -- /usr/sbin/sshd -i -f /etc/ble-t
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
+# sshd's privilege separation directory, also while ssh.service is off. It is
+# shared with ssh.service and stays when a session ends.
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes

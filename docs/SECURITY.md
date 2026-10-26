@@ -58,8 +58,8 @@ public key, to log its fingerprint.
 |---|---|---|---|
 | S-1 | Medium | Fixed (0.1.3) | Journal entries could be forged through CLOSE messages |
 | S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
-| S-3 | Medium | Partly mitigated (0.1.3), rest in backlog | One client can occupy the only session slot |
-| S-4 | Medium | Documented, rest in backlog | Password guessing over BLE is not rate limited by source |
+| S-3 | Medium | Partly mitigated (0.1.3), rest accepted | One client can occupy the only session slot |
+| S-4 | Medium | Accepted; README recommends public keys only | Password guessing over BLE is not rate limited by source |
 | S-5 | Low | Fixed (0.1.3) | A compromised daemon controls all of BlueZ over D-Bus |
 | S-6 | Low | Superseded (0.2.0): system policy | Unix socket forwarding was allowed |
 | S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
@@ -116,8 +116,13 @@ v1 serves one client. A nearby device can keep the slot: up to 10 s for
 the BleStream handshake (5 s if it opens only one characteristic), then up
 to sshd's `LoginGraceTime` before authenticating, and repeat. 0.1.3 cut the
 handshake limit from 20 s to 10 s. `LoginGraceTime` was 60 s in 0.1.3;
-since 0.2.0 it is the system's (120 s by default, see S-11). Several
-sessions at once and other options are in backlog.md.
+since 0.2.0 it is the system's (120 s by default, see S-11).
+
+Accepted. Several sessions at once need BlueZ 5.69 or later, and letting a
+new client push out one that has not authenticated yet lets a stranger
+break the owner's login just as well. Neither removes the problem, so v1
+keeps one slot; the effect is a denial of service within radio range, not
+access.
 
 ### S-4 Password guessing
 
@@ -127,8 +132,13 @@ had 3), the session slot (one connection at a time, `LoginGraceTime`) and
 PAM (e.g. `pam_faillock`, if configured) are the limits. Guessing over BLE
 is slower than over the network: one connection at a time at a few kB/s.
 BLE addresses of phones rotate, so a per-address limit in the daemon is
-weak. The README recommends public keys only, and `AllowGroups` for BLE
-logins; a default group and a session rate limit are in backlog.md.
+weak, and a global limit on new sessions would let a stranger lock out the
+owner.
+
+Accepted. The README recommends public keys only, which makes guessing
+pointless; administrators who keep passwords can limit BLE logins further
+in the system configuration (`AllowGroups` above the `Include` line,
+`pam_faillock`).
 
 ### S-5 D-Bus access of the daemon
 

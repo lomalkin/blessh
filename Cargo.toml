@@ -1,6 +1,6 @@
 [package]
 name = "ble-term"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.75"
 description = "SSH sessions over Bluetooth Low Energy for Linux/BlueZ"
@@ -87,7 +87,6 @@ assets = [
     ["packaging/systemd/ble-term-session.socket", "usr/lib/systemd/system/", "644"],
     ["packaging/systemd/ble-term-session@.service", "usr/lib/systemd/system/", "644"],
     ["packaging/sysusers.conf", "usr/lib/sysusers.d/ble-term.conf", "644"],
-    ["packaging/tmpfiles.conf", "usr/lib/tmpfiles.d/ble-term.conf", "644"],
     ["packaging/dbus.conf", "usr/share/dbus-1/system.d/ble-term.conf", "644"],
     ["README.md", "usr/share/doc/ble-term/", "644"],
     ["docs/protocol.md", "usr/share/doc/ble-term/", "644"],

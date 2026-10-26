@@ -26,6 +26,20 @@ version.
 | 2026-10-25 | Raspberry Pi Zero 2 W Rev 1.0 | Raspberry Pi OS (Debian 12 bookworm), 64-bit, image 2026-10-06 | 6.12.109+rpt-rpi-v8 | 5.66-1+rpt2+deb12u2 | 9.2p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Without `Channels = 1`: the package turns ECRED off (also after reboot); phone gets no pairing request. Upgrade, purge, clean install |
 | 2026-10-25 | Raspberry Pi 5 Model B Rev 1.1 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-2712 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | — | — | pass | pass | — | Upgrade, purge, clean install; server role only |
 | 2026-10-25 | Flipper One F2 (prototype; Rockchip RK3576, MediaTek MT7921 USB Bluetooth) | FlipperOS (Debian 13 trixie), Minimal profile (no desktop) | 7.3.0-rc7 | 5.82-1.1 | 10.0p1 | 0.2.1~ci52-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | pass | — | pass | — | pass | pass | — | Reboot and soft-reboot pass. CLOSE on shutdown: the client gets "server is shutting down". WirePlumber publishes BLE MIDI, which makes BlueZ clients try to pair and hang (README, "Desktop client"); stopped for the client runs |
+
+Notes on devices:
+
+* **Flipper One F2:** its Bluetooth controller (MT7921) stops advertising
+  while a client is connected; it advertises again after the disconnect. The
+  Raspberry Pi controllers keep advertising. Harmless with one session at a
+  time.
+* **Raspberry Pi Zero 2 W:** logins take 3 to 11 s over BLE (Pi 3 B+ and
+  Pi 5: 3 to 4 s). The link runs at a 48.75 ms connection interval without
+  data length extension, and the controller sends about one 27 byte packet
+  per connection event; it shares its antenna with Wi-Fi, so the rate
+  depends on 2.4 GHz conditions. Measured with `ble-term-connect` on
+  another bench node (2026-10-26).
+
 ## Bench to bench
 
 `tests/e2e-bench.sh` between two bench machines (tier 2 in
@@ -54,3 +68,6 @@ clients on one link).
 | Date | Client | OS | App build | Server | Result | Notes |
 |---|---|---|---|---|---|---|
 | 2026-10-24 | Google Pixel 8 Pro | GrapheneOS (Android 17) | connectbot-ble 3 (adc47dc) | Raspberry Pi 3 Model B+ | pass | Client uses rotating private addresses |
+| 2026-10-25 | Google Pixel 8 Pro | GrapheneOS (Android 17) | ble-r1 … ble-r5 | all bench servers | pass | Scan, login, compression, rotation, background, reconnect, CLOSE on server restart; pairing request detected with EATT turned on (ble-r4 showed the hint only in the app log) |
+| 2026-10-26 | Android 11 phone | Android 11 | ble-r3 … ble-r5 | bench servers | pass | Scan finds nothing while location is off (Android holds results back); ble-r5 says so in the scan dialog, not yet checked on the phone. Up to ble-r2 the app crashed after login on servers with an ECDSA host key (sshlib on Android 12 and older); worked around since ble-r3 |
+| 2026-10-26 | Android 8 phone | Android 8 | ble-r3 | bench servers | pass | Scan and BLE login |

@@ -144,7 +144,6 @@ commands() {
 
 if [ "$1" = configure ]; then
     systemd-sysusers ble-term.conf
-    systemd-tmpfiles --create ble-term.conf || true
     systemd=
     if [ -d /run/systemd/system ]; then
         systemd=1
