@@ -7,18 +7,19 @@ case.
 
 ## Tier 1: CI on every push
 
-Cheap and short; GitHub runners, `.github/workflows/ci.yml`. A push is not
-done until these pass.
+Cheap and short; GitHub runners, `.github/workflows/blessh.yml`. A push is
+not done until these pass.
 
 | Check | How |
 |---|---|
 | Formatting, lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` |
-| Protocol state machine (Rust) | `cargo test` |
+| Protocol state machine, relay, preamble, client argument parsing | `cargo test` |
 | OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh-session` | `tests/e2e-loopback.sh` |
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
-| Packages for arm64, amd64, armhf; ARMv6 unit tests on an emulated ARM1176 | jobs `deb`, `deb-armhf` |
-| Package in clean bookworm and trixie: BLE sessions get the system SSH configuration, purge | job `package` (`tests/e2e-package.sh`) |
+| Packages for arm64 and amd64 (both `blessh-server` and `blessh-client`) | job `deb`; locally `tests/docker/build-deb.sh` |
+| Packages in clean bookworm and trixie: BLE sessions get the system SSH configuration, the client runs, purge | job `package` (`tests/e2e-package.sh`; locally `tests/docker/test-package.sh`) |
+| macOS build and unit tests | job `macos` |
 | Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
 
 ## Tier 2: long checks and bench tests, on request
@@ -29,12 +30,13 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 
 | Check | How |
 |---|---|
-| Real BlueZ GATT path with two virtual controllers (root, `hci_vhci`) | `tests/e2e-vhci.sh`; again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
-| Undefined behaviour | `cargo +nightly miri test --lib --no-default-features` (about 40 min) |
-| Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani --no-default-features --lib` (about a minute) |
+| Both transports over real BlueZ with two virtual controllers: L2CAP sessions, the ssh wrapper, two sessions on one link, the session limit, link loss, reconnects, the GATT stream with and without write responses (root, `hci_vhci`, `btvirt -L -l2`) | `tests/e2e-vhci.sh` (`SERVER_HCI`/`CLIENT_HCI` when a real adapter holds hci0); again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
+| Undefined behaviour | `cargo +nightly miri test -p blessh-core` (about 40 min) |
+| Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani -p blessh-core` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
-| Bench: client and server over the radio (`blessh` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB) |
+| Bench: client and server over the radio (`blessh` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB over the GATT stream, seconds over the channel) |
+| Bench: two client devices at the same time, phones, CoreBluetooth clients | by hand; not covered by btvirt (see architecture.md, "Verified so far") |
 | Bench: install and upgrade | S1, S13 and the other cases below that need no phone |
 
 Bench nodes are shared: before a run, say which nodes it uses and for how
@@ -63,7 +65,7 @@ installer says so and how to switch it on. Then check:
 
 ```
 systemctl status blessh-server.service blessh-session.socket
-journalctl -u blessh-server -n 20     # ends with "ready (BlueZ GATT application and advertisement registered)"
+journalctl -u blessh-server -n 20     # ends with "ready (BlueZ GATT application and advertisement registered, L2CAP channel on PSM 0x..)"
 ```
 
 On Bookworm (BlueZ 5.66) the journal of `blessh-server.service` says that ECRED

@@ -9,16 +9,18 @@ their status changes.
 Do not report vulnerabilities in public issues. Use GitHub's private
 vulnerability reporting (Security tab, "Report a vulnerability") or a draft
 security advisory; while the repository is private, contact the
-maintainers directly. Include the affected version (`dpkg -s blessh`),
+maintainers directly. Include the affected version (`dpkg -s blessh-server`),
 the BlueZ and OS versions, and steps to reproduce. Fixes go into the next
 release; only the latest release is supported. Vulnerabilities of the
 Android client belong to the client's repository.
 
 ## Threat model
 
-The server advertises a GATT service without pairing. Anyone within radio
-range (tens of metres, more with a directional antenna) can connect and send
-arbitrary data before authenticating. Authentication and encryption are left
+The server advertises a GATT service and listens on an L2CAP channel
+without pairing. Anyone within radio range (tens of metres, more with a
+directional antenna) can connect and send arbitrary data before
+authenticating, in up to `--max-sessions` sessions at once (4 by
+default). Authentication and encryption are left
 to SSH: the client pins the host key, users log in with a password (PAM)
 or a public key. BLE sessions get the system SSH server's configuration and
 host keys, so the login policy is the administrator's, the same as over the

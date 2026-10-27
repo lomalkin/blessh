@@ -1,33 +1,90 @@
-# BleStream v1
+# blessh transport
 
-BleStream carries one reliable, ordered, flow-controlled byte stream in each
-direction over a pair of GATT characteristics. blessh runs SSH over it: the
-client's SSH library talks to a per-connection `sshd -i` on the server.
+A blessh server is a BLE peripheral that advertises one service. A client
+connects, reads INFO and runs SSH over one of two transports: an L2CAP
+connection-oriented channel (the main one) or the GATT stream BleStream v1
+(the fallback). Either way the bytes are a plain SSH connection to the
+server's `sshd -i`.
 
-## GATT layout
+## Discovery
+
+The server advertises the service UUID `5b1e7e00-6d2c-4f4a-9a3e-2c1b0e8f4a10`
+(16-bit list form is not used) and its name as the local name; the
+advertising interval is 400 ms. Clients scan for the UUID and select a
+server by name or by address. Neither is authenticated: the SSH host key is.
+
+## GATT service
 
 | Item | UUID | Properties |
 |---|---|---|
 | Service | `5b1e7e00-6d2c-4f4a-9a3e-2c1b0e8f4a10` | primary, advertised |
-| INFO | `5b1e7e01-6d2c-4f4a-9a3e-2c1b0e8f4a10` | read: UTF-8 `proto=1;name=<host>;mtu=<n>[;busy=1]` |
-| RX (client → server) | `5b1e7e02-6d2c-4f4a-9a3e-2c1b0e8f4a10` | write, write without response |
-| TX (server → client) | `5b1e7e03-6d2c-4f4a-9a3e-2c1b0e8f4a10` | notify |
+| INFO | `5b1e7e01-6d2c-4f4a-9a3e-2c1b0e8f4a10` | read: UTF-8 `key=value` pairs separated by `;` |
+| RX (client → server) | `5b1e7e02-6d2c-4f4a-9a3e-2c1b0e8f4a10` | write, write without response: GATT stream |
+| TX (server → client) | `5b1e7e03-6d2c-4f4a-9a3e-2c1b0e8f4a10` | notify: GATT stream |
+| PSM | `abdd3056-28fa-441d-a470-55a75a52553a` | read: u16 little endian, present when the server offers a channel |
 
-INFO is `key=value` pairs separated by `;`; clients ignore unknown keys.
-`mtu` (servers from 0.1.3) is the ATT MTU of the bearer the read arrived on,
-for clients that cannot query it; read INFO after the MTU exchange. The
-value can be longer than one ATT PDU; the server serves long reads (Read
-Blob) from the requested offset. `busy=1` means that another device holds
-the server (its session is open or being opened); see the client rules.
+No characteristic requires encryption or pairing.
 
-No characteristic requires encryption or pairing: confidentiality and
-authentication come from SSH (host key pinning on the client, PAM / public
-keys on the server).
+INFO keys; clients ignore unknown keys:
 
-Every ATT write to RX and every notification on TX carries exactly one frame.
-A frame never exceeds min(ATT_MTU − 3, 500) bytes. The 500 byte cap leaves
-room below the 512 byte attribute limit: BlueZ acting as GATT client was seen
-to drop larger writes without response when EATT is enabled.
+| Key | Value |
+|---|---|
+| `proto` | `1` |
+| `name` | the advertised name |
+| `mtu` | the ATT MTU of the bearer the read arrived on, for clients that cannot query it; read INFO after the MTU exchange |
+| `psm` | decimal PSM of the L2CAP channel; absent when the server offers none |
+| `busy` | `1` while another device holds the GATT stream; absent otherwise. Concerns the GATT stream only |
+
+The value can be longer than one ATT PDU; the server serves long reads
+(Read Blob) from the requested offset.
+
+The PSM characteristic carries the same PSM for iOS and macOS clients, which
+look for Apple's `CBUUIDL2CAPPSMCharacteristicString`.
+
+## L2CAP channel
+
+The server listens on an LE credit based connection-oriented channel with
+a dynamic PSM (0x80 to 0xFF, assigned at start-up) and security level low:
+the client connects without pairing or encryption. The server's receive
+MTU is 1024 bytes by default; the client's is its own choice.
+
+A channel is one session. After the channel is connected, it carries the
+SSH connection in both directions, nothing else: the client's SSH library
+talks to `sshd -i` as it would over TCP. The server may send text lines
+before the SSH banner, as RFC 4253 allows; it does so only to refuse the
+session, with one line
+
+```
+blessh: <reason>\r\n
+```
+
+followed by closing the channel. Reasons: `busy (N sessions)` when the
+server's session limit is reached, `session unavailable` when it cannot
+start sshd. OpenSSH shows such lines with `-v`.
+
+The session ends when either side closes the channel or the link goes
+down; the server then ends sshd's session (EOF, SIGHUP). A client may open
+several channels on one link, one session each. The server does not
+disconnect a link that carries a channel; ten seconds after the last
+channel on a link closed, it disconnects the link unless a new channel
+opened meanwhile. Linux reports a peer's close or a lost link on an L2CAP
+socket as an error (`ECONNRESET`, `ECONNABORTED`, `ETIMEDOUT`), not as
+end of file; the errno names the HCI reason.
+
+Platform notes: Linux clients open the channel through the kernel (`AF_BLUETOOTH`,
+`BTPROTO_L2CAP`, `BT_SECURITY_LOW`), bluetoothd is not involved; Android
+uses `BluetoothDevice.createInsecureL2capChannel` (API 29); iOS and macOS
+`CBPeripheral.openL2CAPChannel`. Web Bluetooth and Windows have no L2CAP
+API and use the GATT stream.
+
+## GATT stream: BleStream v1
+
+BleStream carries one reliable, ordered, flow-controlled byte stream in each
+direction over the RX and TX characteristics. Every ATT write to RX and
+every notification on TX carries exactly one frame. A frame never exceeds
+min(ATT_MTU − 3, 500) bytes. The 500 byte cap leaves room below the 512
+byte attribute limit: BlueZ acting as GATT client was seen to drop larger
+writes without response when EATT is enabled.
 
 The client writes RX with write without response or with write request
 (write with response); the server treats both alike. Either way a frame
@@ -43,7 +100,7 @@ since 5.67; on older BlueZ the server package keeps EATT off by turning off
 the kernel's ECRED mode; phones open EATT only on encrypted links, and
 blessh links are not encrypted).
 
-## Frames
+### Frames
 
 ```
 offset 0   u8      type
@@ -69,11 +126,11 @@ HELLO flags are sent as 0 and receivers ignore unknown bits; receivers also
 ignore bytes after the window field. Both are reserved for compatible
 extensions, see [compatibility.md](compatibility.md).
 
-CLOSE reasons: 0 normal, 1 busy (another client is connected), 2 protocol
-error, 3 session unavailable (server could not start sshd, or is shutting
-down), 4 timeout.
+CLOSE reasons: 0 normal, 1 busy (another client holds the stream, or the
+session limit is reached), 2 protocol error, 3 session unavailable (server
+could not start sshd, or is shutting down), 4 timeout.
 
-## Session
+### Session
 
 1. The client connects, subscribes to TX notifications and sends HELLO on RX
    (sequence 0). The server sends its HELLO on TX once both characteristics are
@@ -93,7 +150,17 @@ down), 4 timeout.
 The server allows the handshake 10 s (default) after the client starts using
 the characteristics.
 
-## Flow control
+### Why a turned-away client must not subscribe
+
+The GATT stream carries one session at a time. INFO says `busy=1` while
+another device holds it, and a client that reads it leaves without
+subscribing: BlueZ closes another device's notification socket when a
+subscribed device disconnects (5.82 to at least 5.87), and before 5.69 all
+devices share one write socket, so a second subscriber can end the first
+client's session. Clients that subscribe anyway get CLOSE 1, with that
+risk. The L2CAP channel has none of this: every channel is its own socket.
+
+### Flow control
 
 Each side announces in HELLO how many DATA payload bytes it can buffer
 (`window`). The sender keeps a credit counter: it starts at the peer's window,
@@ -112,7 +179,7 @@ response if the daemon falls behind, and mobile stacks offer no backpressure
 for notifications. Credits bound every queue on the path; the link layer is
 already reliable, so no retransmission is needed.
 
-## Client rules
+### Client rules
 
 * Use write without response for RX and keep only the OS-permitted number of
   writes outstanding (Android: wait for `onCharacteristicWrite`; iOS: wait for
@@ -125,30 +192,8 @@ already reliable, so no retransmission is needed.
   may raise the size to the longest TX notification received: one bearer
   has one MTU for both directions.
 * Pass DATA bytes to the SSH layer unchanged; never decode text per packet.
-* Read INFO before subscribing to TX. If it has `busy=1`, report that the
-  server is busy and disconnect without subscribing to TX or writing RX.
-  A server whose INFO lacks the key turns a second client away with CLOSE 1
-  after it has subscribed; that still works, but on BlueZ it can end the
-  active session (below).
 
-### Why a turned-away client must not subscribe
-
-BlueZ keeps one notification socket per subscribed device and closes them
-when devices disconnect. When a device disconnects with its TX subscription
-still on, BlueZ clears the subscription with a call that names no device
-and closes the first notification socket in its list, which can belong to
-the device whose session is running (`ccc_write_cb` in
-`src/gatt-database.c`; observed with BlueZ 5.82, the same code is in 5.85
-and in its development tree). The server then sees the active client's TX closed and
-ends that session, although its link is up. Before BlueZ 5.69 there is one
-write socket for all devices, so RX writes of a second client go into the
-active session's stream, which ends with a protocol error.
-
-Either way the cause is a second client that subscribes or writes. The
-server cannot refuse a subscription, so it says `busy=1` in INFO and the
-client stops before that. Clients that do not check INFO still trigger it.
-
-## Test vectors
+### Test vectors
 
 ```
 HELLO v1 window=0x4000, seq 0 : 01 00 00 42 4c 54 4d 01 00 00 40 00 00

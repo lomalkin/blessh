@@ -1,0 +1,12 @@
+# Build environment for the Debian packages, the same as the CI job: Debian
+# bookworm, Rust from rustup, the arm64 cross toolchain and cargo-deb.
+FROM debian:bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl git gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target aarch64-unknown-linux-gnu
+ENV PATH=/root/.cargo/bin:$PATH \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+RUN cargo install cargo-deb --locked
+WORKDIR /src

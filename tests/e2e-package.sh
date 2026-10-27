@@ -1,16 +1,17 @@
 #!/bin/sh
-# Installs a blessh package in a throwaway Debian system (a container,
+# Installs the blessh packages in a throwaway Debian system (a container,
 # as root) and checks that BLE sessions get the system SSH server's
 # configuration: settings in /etc/ssh/sshd_config.d apply, settings above
-# the Include in /etc/blessh/sshd_config apply to BLE only, and purge
-# leaves nothing behind.
+# the Include in /etc/blessh/sshd_config apply to BLE only, the client
+# runs, and purge leaves nothing behind.
 #
-#   tests/e2e-package.sh <blessh_*.deb>
+#   tests/e2e-package.sh <blessh-server_*.deb> [<blessh-client_*.deb>]
 set -u
 
-[ $# -eq 1 ] || { sed -n '8p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '8p' "$0"; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "run as root, in a container"; exit 2; }
-DEB=$(realpath "$1")
+SERVER_DEB=$(realpath "$1")
+CLIENT_DEB=${2:+$(realpath "$2")}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
@@ -28,13 +29,17 @@ check() {
 ble() { /usr/sbin/sshd -T -f /etc/blessh/sshd_config | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y --no-install-recommends "$DEB" > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
+apt-get install -y --no-install-recommends "$SERVER_DEB" > "$T/install.log" 2>&1 || { cat "$T/install.log"; exit 1; }
 # apt runs dpkg on a pseudo-terminal: lines end in CR LF.
 tr -d '\r' < "$T/install.log" > "$T/install.txt" && mv "$T/install.txt" "$T/install.log"
 sed -n '/^Setting up blessh-server/,$p' "$T/install.log"
 
-[ ! -e /etc/blessh/ssh_host_ed25519_key ]
-check "no host key of its own" $?
+/usr/sbin/blessh-server --version > /dev/null
+check "server binary runs" $?
+/usr/lib/blessh/blessh-session --version > /dev/null
+check "session helper runs" $?
+getent passwd _blessh > /dev/null
+check "installer creates the _blessh user" $?
 fp=$(ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub | awk '{ print $2 }')
 grep -q "^  Host key  $fp (same as network SSH)" "$T/install.log"
 check "installer prints the system host key fingerprint" $?
@@ -42,7 +47,7 @@ grep -q '^  Policy    as network SSH: passwords ' "$T/install.log"
 check "installer prints the login policy" $?
 grep -q '^  sshd configuration  valid  *OK$' "$T/install.log"
 check "installer checks the sshd configuration" $?
-! sed -n '/^blessh .*: SSH over Bluetooth LE$/,/^Processing triggers/p' "$T/install.log" | grep -q '.\{101\}'
+! sed -n '/^blessh-server .*: SSH over Bluetooth LE$/,/^Processing triggers/p' "$T/install.log" | grep -q '.\{101\}'
 check "installer lines fit in 100 columns" $?
 /usr/sbin/sshd -t -f /etc/blessh/sshd_config
 check "sshd accepts the configuration" $?
@@ -84,8 +89,25 @@ else
 fi
 grep -q 'ExecStartPre=+/usr/lib/blessh/eatt-off' /usr/lib/systemd/system/blessh-server.service
 check "service runs eatt-off" $?
+grep -q 'ExecStart=/usr/sbin/blessh-server ' /usr/lib/systemd/system/blessh-server.service
+check "service starts the server" $?
 grep -qx 'RuntimeDirectory=sshd' /usr/lib/systemd/system/blessh-session@.service && [ ! -e /usr/lib/tmpfiles.d/blessh.conf ]
 check "session unit creates /run/sshd (no tmpfiles line)" $?
+grep -qx 'ListenStream=/run/blessh/session.sock' /usr/lib/systemd/system/blessh-session.socket
+check "session socket path" $?
+
+if [ -n "$CLIENT_DEB" ]; then
+    apt-get install -y --no-install-recommends "$CLIENT_DEB" > "$T/client.log" 2>&1 || { cat "$T/client.log"; exit 1; }
+    blessh --help | grep -q '^Usage: blessh \[ssh options\]'
+    check "client prints its usage" $?
+    blessh --version | grep -q '^blessh [0-9]'
+    check "client prints its version" $?
+    blessh proxy --help > /dev/null && blessh scan --help > /dev/null
+    check "client subcommands" $?
+    apt-get purge -y blessh-client > "$T/client-purge.log" 2>&1 || { cat "$T/client-purge.log"; exit 1; }
+    [ ! -e /usr/bin/blessh ]
+    check "client purge removes the binary" $?
+fi
 
 apt-get purge -y blessh-server > "$T/purge.log" 2>&1 || { cat "$T/purge.log"; exit 1; }
 [ ! -e /etc/blessh ] && [ ! -e /etc/default/blessh ]

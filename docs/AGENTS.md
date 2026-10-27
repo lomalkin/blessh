@@ -32,16 +32,18 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 
 * Protocol and client-facing behaviour: read
   [compatibility.md](compatibility.md). Anything listed there must keep
-  working with v1 clients that are already installed.
-* Run `cargo clippy --all-targets -- -D warnings`, `cargo test` and
-  `cargo build && tests/e2e-loopback.sh`.
+  working with clients that are already installed.
+* Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test` and `cargo build && tests/e2e-loopback.sh`; for transport
+  changes also `tests/e2e-vhci.sh` on a Linux machine with `btvirt`.
 
 ## Where things go
 
 | File | Contents |
 |---|---|
-| [protocol.md](protocol.md) | BleStream wire protocol (normative) |
-| [compatibility.md](compatibility.md) | What server and clients must keep compatible in v1 |
+| [architecture.md](architecture.md) | Principles, platforms, transports, components, session model |
+| [protocol.md](protocol.md) | Wire protocol: discovery, GATT service, L2CAP channel, BleStream (normative) |
+| [compatibility.md](compatibility.md) | What installed clients rely on and how the protocol grows |
 | [testing.md](testing.md) | How to test on real hardware |
 | [hardware.md](hardware.md) | Hardware and OS versions verified so far; add a row after each hardware test |
 | [backlog.md](backlog.md) | Ideas that are agreed to be useful but not scheduled |

@@ -1,0 +1,202 @@
+name: blessh
+
+on:
+  push:
+    branches:
+      - lomalkin/alternatives
+    tags:
+      - 'blessh-v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git \
+            openssh-client openssh-server systemd python3
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --component clippy,rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: End-to-end (ssh <-> simulated BLE <-> sshd -i)
+        run: |
+          mkdir -p /run/sshd
+          cargo build
+          tests/e2e-loopback.sh target/debug/blessh-loopback
+
+  # Licences, sources, duplicate crates and RustSec advisories (deny.toml);
+  # the fuzz crate has its own lock file.
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: cargo deny check
+      - name: Advisories of the fuzz crate
+        run: cargo deny --manifest-path tests/fuzz/Cargo.toml check advisories
+
+  # 30 s per fuzz target from the seeds: catches regressions early; long
+  # runs are made on request (docs/testing.md).
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly
+        run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz each target for 30 s
+        run: |
+          for t in $(cargo +nightly fuzz list --fuzz-dir tests/fuzz); do
+            mkdir -p "tests/fuzz/corpus/$t"
+            seeds=
+            [ -d "tests/fuzz/seeds/$t" ] && seeds="tests/fuzz/seeds/$t"
+            # The prebuilt cargo-fuzz is a musl binary and defaults to its
+            # own target, which the sanitizer does not support.
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu --fuzz-dir tests/fuzz \
+                "$t" "tests/fuzz/corpus/$t" $seeds -- -max_total_time=30
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: tests/fuzz/artifacts
+
+  # Debian packages for 64-bit Raspberry Pi OS / Debian (arm64) and PCs
+  # (amd64); tests/docker/build-deb.sh does the same locally.
+  deb:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            gcc: gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          - target: x86_64-unknown-linux-gnu
+            gcc: gcc
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates curl git ${{ matrix.gcc }}
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target ${{ matrix.target }}
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: Package version
+        run: ci/deb-version.sh >> "$GITHUB_ENV"
+      - name: Build packages
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: |
+          for p in blessh-server blessh-client; do
+            cargo deb -p $p --target ${{ matrix.target }} --deb-version "$DEB_VERSION"
+          done
+          for f in target/${{ matrix.target }}/debian/*.deb; do
+            dpkg-deb -f "$f" Package Version Architecture
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blessh-${{ matrix.target }}
+          path: target/${{ matrix.target }}/debian/*.deb
+
+  # The amd64 packages installed in a clean Debian: BLE sessions get the
+  # system SSH server's configuration, the client runs, purge leaves
+  # nothing behind.
+  package:
+    needs: deb
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ['debian:bookworm', 'debian:trixie']
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: blessh-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Install and check
+        run: |
+          apt-get update
+          tests/e2e-package.sh dist/blessh-server_*.deb dist/blessh-client_*.deb
+
+  # macOS: the workspace builds and its platform-independent tests pass;
+  # the binaries are packaged as a tarball for bench tests.
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --release
+      - name: Unit tests
+        run: cargo test
+      - name: Tarball
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          mkdir -p dist/blessh-$ver-macos-arm64
+          cp target/release/blessh target/release/blessh-server target/release/blessh-session dist/blessh-$ver-macos-arm64/
+          tar -C dist -czf dist/blessh-$ver-macos-arm64.tar.gz blessh-$ver-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blessh-macos-arm64
+          path: dist/*.tar.gz
+
+  # A tag blessh-vX.Y.Z publishes a GitHub release with the packages,
+  # SHA256SUMS and the commit subjects since the previous blessh tag.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [test, deps, fuzz-smoke, deb, package, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: blessh-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums and notes
+        run: |
+          cd dist
+          sha256sum *.deb *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          prev=$(git describe --tags --match 'blessh-v*' --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          # docs/releases/<tag>.md, if present, comes first: what users
+          # must know when upgrading.
+          if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
+            cat "docs/releases/$GITHUB_REF_NAME.md"
+            printf '\n**Commits**\n\n'
+          fi > notes.md
+          git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME" >> notes.md
+          cat notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "blessh ${GITHUB_REF_NAME#blessh-v}" --notes-file notes.md

@@ -2,6 +2,9 @@ name: ci
 
 on:
   push:
+    # The blessh rework has its own workflow (blessh.yml).
+    branches-ignore:
+      - lomalkin/alternatives
   pull_request:
   workflow_dispatch:
 
