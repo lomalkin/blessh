@@ -302,20 +302,34 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     };
     let _lock = lock_device(dev.address()).await;
     info!("connecting to {}", dev.address());
-    if !dev.is_connected().await? {
-        let mut attempt = 0;
-        loop {
-            match dev.connect().await {
-                Ok(()) => break,
-                Err(e) if attempt < 2 => {
-                    debug!("connect failed: {e}, retrying");
-                    attempt += 1;
+    // A link that is still going down (the previous client just
+    // disconnected) looks connected; service discovery then fails with
+    // ServicesUnresolved. Connect again once in that case.
+    let mut rediscovered = false;
+    let chars = loop {
+        if !dev.is_connected().await? {
+            let mut attempt = 0;
+            loop {
+                match dev.connect().await {
+                    Ok(()) => break,
+                    Err(e) if attempt < 2 => {
+                        debug!("connect failed: {e}, retrying");
+                        attempt += 1;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return Err(e.into()),
             }
         }
-    }
-    let Some(chars) = characteristics(&dev).await? else {
+        match characteristics(&dev).await {
+            Err(e) if e.kind == bluer::ErrorKind::ServicesUnresolved && !rediscovered => {
+                debug!("{e}, connecting again");
+                rediscovered = true;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            r => break r?,
+        }
+    };
+    let Some(chars) = chars else {
         return Err("device does not provide the ble-term service".into());
     };
     if let Some(c) = &chars.info {
