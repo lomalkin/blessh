@@ -33,7 +33,8 @@ description is [protocol.md](protocol.md).
   package never changes them, otherwise every client sees a host key
   change.
 * **Behaviour clients rely on:** the server ends the session on BLE
-  disconnect; a second client gets CLOSE 1 (busy).
+  disconnect; a second client gets CLOSE 1 (busy), and also sees `busy=1` in
+  INFO before it subscribes.
 
 ## How v1 may be extended
 
@@ -43,7 +44,7 @@ description is [protocol.md](protocol.md).
   10-byte HELLO payload; new HELLO fields go there, guarded by a flag.
 * **INFO.** `key=value` pairs separated by `;`. Clients ignore unknown keys;
   new keys may be added, `proto` and `name` stay. Added so far: `mtu`
-  (0.1.3).
+  (0.1.3), `busy` (0.2.3).
 * **New CLOSE reasons** may be added. Receivers accept unknown reasons (the
   Rust code maps them to "protocol error", the Android client shows the
   number).

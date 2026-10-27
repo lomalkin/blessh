@@ -240,6 +240,13 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let info_name = name.clone();
+    // The device whose stream is open or being opened. INFO tells other
+    // devices that the server is busy before they subscribe: BlueZ closes a
+    // notification socket of another device when a subscribed device
+    // disconnects (5.82 to at least 5.87), and before 5.69 all devices share
+    // one write socket, so a turned-away client must not get that far.
+    let holder: Arc<std::sync::Mutex<Option<Address>>> = Arc::default();
+    let (info_holder, info_adapter) = (holder.clone(), adapter.clone());
     let (rx_control, rx_handle) = characteristic_control();
     let (tx_control, tx_handle) = characteristic_control();
     let app = Application {
@@ -252,11 +259,21 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     read: Some(CharacteristicRead {
                         read: true,
                         fun: Box::new(move |req| {
-                            let v = protocol::info(&info_name, req.mtu).into_bytes();
-                            let part = protocol::read_at(&v, req.offset)
-                                .map(<[u8]>::to_vec)
-                                .ok_or(ReqError::InvalidOffset);
-                            async move { part }.boxed()
+                            let holder = *info_holder.lock().unwrap();
+                            let (adapter, name) = (info_adapter.clone(), info_name.clone());
+                            async move {
+                                let busy = match holder {
+                                    Some(h) if h != req.device_address => {
+                                        is_connected(&adapter, h).await
+                                    }
+                                    _ => false,
+                                };
+                                let v = protocol::info(&name, req.mtu, busy).into_bytes();
+                                protocol::read_at(&v, req.offset)
+                                    .map(<[u8]>::to_vec)
+                                    .ok_or(ReqError::InvalidOffset)
+                            }
+                            .boxed()
                         }),
                         ..Default::default()
                     }),
@@ -318,6 +335,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     loop {
+        *holder.lock().unwrap() = active.as_ref().map(|(a, _)| *a).or(pending.address());
         tokio::select! {
             _ = sigterm.recv() => break,
             _ = tokio::signal::ctrl_c() => break,

@@ -9,7 +9,7 @@ client's SSH library talks to a per-connection `sshd -i` on the server.
 | Item | UUID | Properties |
 |---|---|---|
 | Service | `5b1e7e00-6d2c-4f4a-9a3e-2c1b0e8f4a10` | primary, advertised |
-| INFO | `5b1e7e01-6d2c-4f4a-9a3e-2c1b0e8f4a10` | read: UTF-8 `proto=1;name=<host>;mtu=<n>` |
+| INFO | `5b1e7e01-6d2c-4f4a-9a3e-2c1b0e8f4a10` | read: UTF-8 `proto=1;name=<host>;mtu=<n>[;busy=1]` |
 | RX (client → server) | `5b1e7e02-6d2c-4f4a-9a3e-2c1b0e8f4a10` | write, write without response |
 | TX (server → client) | `5b1e7e03-6d2c-4f4a-9a3e-2c1b0e8f4a10` | notify |
 
@@ -17,7 +17,8 @@ INFO is `key=value` pairs separated by `;`; clients ignore unknown keys.
 `mtu` (servers from 0.1.3) is the ATT MTU of the bearer the read arrived on,
 for clients that cannot query it; read INFO after the MTU exchange. The
 value can be longer than one ATT PDU; the server serves long reads (Read
-Blob) from the requested offset.
+Blob) from the requested offset. `busy=1` means that another device holds
+the server (its session is open or being opened); see the client rules.
 
 No characteristic requires encryption or pairing: confidentiality and
 authentication come from SSH (host key pinning on the client, PAM / public
@@ -124,6 +125,28 @@ already reliable, so no retransmission is needed.
   may raise the size to the longest TX notification received: one bearer
   has one MTU for both directions.
 * Pass DATA bytes to the SSH layer unchanged; never decode text per packet.
+* Read INFO before subscribing to TX. If it has `busy=1`, report that the
+  server is busy and disconnect without subscribing to TX or writing RX.
+  A server whose INFO lacks the key turns a second client away with CLOSE 1
+  after it has subscribed; that still works, but on BlueZ it can end the
+  active session (below).
+
+### Why a turned-away client must not subscribe
+
+BlueZ keeps one notification socket per subscribed device and closes them
+when devices disconnect. When a device disconnects with its TX subscription
+still on, BlueZ clears the subscription with a call that names no device
+and closes the first notification socket in its list, which can belong to
+the device whose session is running (`ccc_write_cb` in
+`src/gatt-database.c`; observed with BlueZ 5.82, the same code is in 5.85
+and in its development tree). The server then sees the active client's TX closed and
+ends that session, although its link is up. Before BlueZ 5.69 there is one
+write socket for all devices, so RX writes of a second client go into the
+active session's stream, which ends with a protocol error.
+
+Either way the cause is a second client that subscribes or writes. The
+server cannot refuse a subscription, so it says `busy=1` in INFO and the
+client stops before that. Clients that do not check INFO still trigger it.
 
 ## Test vectors
 

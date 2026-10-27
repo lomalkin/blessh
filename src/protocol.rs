@@ -279,8 +279,14 @@ mod printable_tests {
 
 /// Value of the INFO characteristic. `mtu` is the ATT MTU of the bearer the
 /// read arrived on, for clients that cannot query it.
-pub fn info(name: &str, mtu: u16) -> String {
-    format!("proto={VERSION};name={name};mtu={mtu}")
+pub fn info(name: &str, mtu: u16, busy: bool) -> String {
+    let busy = if busy { ";busy=1" } else { "" };
+    format!("proto={VERSION};name={name};mtu={mtu}{busy}")
+}
+
+/// Whether an INFO value says another client holds the server.
+pub fn info_busy(info: &str) -> bool {
+    info.split(';').any(|kv| kv == "busy=1")
 }
 
 /// The part of an attribute value a read at `offset` returns (ATT Read Blob
@@ -292,16 +298,24 @@ pub fn read_at(value: &[u8], offset: u16) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod info_tests {
-    use super::{info, read_at};
+    use super::{info, info_busy, read_at};
 
     #[test]
     fn info_value() {
-        assert_eq!(info("pi", 517), "proto=1;name=pi;mtu=517");
+        assert_eq!(info("pi", 517, false), "proto=1;name=pi;mtu=517");
+        assert_eq!(info("pi", 23, true), "proto=1;name=pi;mtu=23;busy=1");
+    }
+
+    #[test]
+    fn info_busy_flag() {
+        assert!(info_busy("proto=1;name=pi;mtu=23;busy=1"));
+        assert!(!info_busy("proto=1;name=pi;mtu=23"));
+        assert!(!info_busy("proto=1;name=busy=1x;mtu=23"));
     }
 
     #[test]
     fn long_reads_continue_at_offset() {
-        let v = info("a-rather-long-host-name", 23).into_bytes();
+        let v = info("a-rather-long-host-name", 23, false).into_bytes();
         let mut got = Vec::new();
         while let Some(part) = read_at(&v, got.len() as u16).filter(|p| !p.is_empty()) {
             got.extend_from_slice(&part[..part.len().min(22)]);

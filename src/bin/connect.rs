@@ -9,7 +9,7 @@ use ble_term::{
     bridge::{self, Outcome, PacketRx, PacketTx},
     link::Link,
     logging,
-    protocol::{printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
+    protocol::{self, printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
 };
 use bluer::{
     gatt::{
@@ -320,7 +320,18 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     };
     if let Some(c) = &chars.info {
         match c.read().await {
-            Ok(v) => info!("server info: {}", printable(&String::from_utf8_lossy(&v))),
+            Ok(v) => {
+                let v = String::from_utf8_lossy(&v);
+                info!("server info: {}", printable(&v));
+                // Subscribing would make things worse for the client that
+                // holds the server (see the daemon); leave without it.
+                if protocol::info_busy(&v) {
+                    if !keep_link {
+                        let _ = dev.disconnect().await;
+                    }
+                    return Err("server is busy: another client is connected".into());
+                }
+            }
             Err(e) => debug!("cannot read INFO: {e}"),
         }
     }
