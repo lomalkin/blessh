@@ -267,3 +267,9 @@ commit subjects since the previous tag. Untagged CI builds are versioned
 
 `blessh-loopback` runs both ends of the GATT stream over a simulated link
 (small MTU, packet reordering) and is what the loopback test uses.
+
+Without CI, `ci/local/build.sh blessh-vX.Y.Z` runs the same checks and
+builds the same packages in docker on any Linux host, and writes the
+release notes next to them; publish with `gh release create
+blessh-vX.Y.Z <out>/*.deb <out>/SHA256SUMS --title "blessh X.Y.Z"
+--notes-file <out>/notes.md`.
