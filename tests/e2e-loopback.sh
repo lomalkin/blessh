@@ -61,7 +61,7 @@ out=$(timeout 60 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=
     -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" \
     -o ProxyCommand="$BIN --socket $T/session.sock" "$(id -un)@loopback" 'echo hello-over-ble')
 [ "$out" = hello-over-ble ] || { echo "FAIL: socket echo: $out"; exit 1; }
-grep -Eq 'session [0-9a-f]{16}: BLE device 00:00:00:00:00:00 \(unknown address\)' "$T/session.log" ||
+grep -Eq 'session [0-9a-f]{16}: BLE device 00:00:00:00:00:00 \(unknown address\), transport gatt' "$T/session.log" ||
     { echo "FAIL: no session log line"; cat "$T/session.log"; exit 1; }
 # Anything that is not a preamble is refused before sshd runs.
 timeout 15 python3 -c '

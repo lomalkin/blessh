@@ -2,14 +2,24 @@
 //! forwards each BLE client to a session socket (normally a systemd socket
 //! that spawns `sshd -i` per connection).
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use blessh_ble::bluez::{GattRx, GattTx};
+use blessh_ble::bluez::{self, GattRx, GattTx};
 use blessh_core::{
     bridge::{self, BridgeError, Outcome, PacketTx},
     link::Link,
     logging,
-    protocol::{self, printable, CloseReason, Frame, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
+    protocol::{
+        self, printable, refusal_line, CloseReason, Frame, INFO_UUID, PSM_UUID, RX_UUID,
+        SERVICE_UUID, TX_UUID,
+    },
+    relay::{self, End},
     session::{self, Preamble},
 };
 use bluer::{
@@ -22,6 +32,7 @@ use bluer::{
         },
         CharacteristicReader, CharacteristicWriter,
     },
+    l2cap::{SocketAddr, Stream, StreamListener},
     Adapter, Address, AddressType, DeviceEvent, DeviceProperty, SessionEvent,
 };
 use clap::Parser;
@@ -60,6 +71,71 @@ struct Args {
     /// SSH host public key whose fingerprint is logged at start-up.
     #[arg(long, default_value = "/etc/ssh/ssh_host_ed25519_key.pub")]
     host_key: PathBuf,
+    /// Most sessions at a time over all transports (the session socket's
+    /// MaxConnections should allow as many).
+    #[arg(long, default_value_t = 4)]
+    max_sessions: usize,
+    /// Do not offer an L2CAP channel: clients use the GATT stream only.
+    #[arg(long)]
+    no_l2cap: bool,
+    /// Receive MTU of the L2CAP channel, in bytes.
+    #[arg(long, default_value_t = 1024)]
+    l2cap_mtu: u16,
+}
+
+/// Sessions in progress over both transports, per client device.
+#[derive(Default)]
+struct Sessions {
+    per_device: HashMap<Address, usize>,
+}
+
+type Shared = Arc<Mutex<Sessions>>;
+
+impl Sessions {
+    fn total(&self) -> usize {
+        self.per_device.values().sum()
+    }
+
+    fn has(&self, addr: Address) -> bool {
+        self.per_device.contains_key(&addr)
+    }
+
+    fn devices(&self) -> Vec<Address> {
+        self.per_device.keys().copied().collect()
+    }
+}
+
+/// Counts a session for as long as it exists, however it ends.
+struct Counted {
+    sessions: Shared,
+    addr: Address,
+}
+
+impl Counted {
+    /// Admits a session unless `max` are already in progress.
+    fn admit(sessions: &Shared, addr: Address, max: usize) -> Option<Self> {
+        let mut s = sessions.lock().unwrap();
+        if s.total() >= max {
+            return None;
+        }
+        *s.per_device.entry(addr).or_default() += 1;
+        Some(Self {
+            sessions: sessions.clone(),
+            addr,
+        })
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        let mut s = self.sessions.lock().unwrap();
+        if let Some(n) = s.per_device.get_mut(&self.addr) {
+            *n -= 1;
+            if *n == 0 {
+                s.per_device.remove(&self.addr);
+            }
+        }
+    }
 }
 
 /// Characteristics opened by a client before both are there.
@@ -208,6 +284,10 @@ struct SessionEnd {
     notify: Option<Arc<CharacteristicWriter>>,
 }
 
+/// How long a link stays up after its last L2CAP session, for a client
+/// that opens the next channel right away.
+const LINK_GRACE: Duration = Duration::from_secs(10);
+
 const ADV_INTERVAL: Duration = Duration::from_millis(400);
 
 async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<AdvertisementHandle> {
@@ -240,6 +320,25 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => warn!("cannot read host key {}: {e}", args.host_key.display()),
     }
 
+    let sessions: Shared = Arc::default();
+    // The L2CAP channel is the main transport; the GATT stream stays for
+    // clients that cannot open one.
+    let listener = if args.no_l2cap {
+        None
+    } else {
+        match bluez::l2cap_listen(adapter.address().await?, args.l2cap_mtu, 4).await {
+            Ok(l) => Some(l),
+            Err(e) => {
+                warn!("cannot listen for L2CAP channels: {e}; serving the GATT stream only");
+                None
+            }
+        }
+    };
+    let psm = match &listener {
+        Some(l) => Some(l.as_ref().local_addr()?.psm),
+        None => None,
+    };
+
     let info_name = name.clone();
     // The device whose stream is open or being opened. INFO tells other
     // devices that the server is busy before they subscribe: BlueZ closes a
@@ -250,58 +349,76 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (info_holder, info_adapter) = (holder.clone(), adapter.clone());
     let (rx_control, rx_handle) = characteristic_control();
     let (tx_control, tx_handle) = characteristic_control();
+    let mut characteristics = vec![
+        Characteristic {
+            uuid: INFO_UUID,
+            read: Some(CharacteristicRead {
+                read: true,
+                fun: Box::new(move |req| {
+                    let holder = *info_holder.lock().unwrap();
+                    let (adapter, name) = (info_adapter.clone(), info_name.clone());
+                    async move {
+                        let busy = match holder {
+                            Some(h) if h != req.device_address => is_connected(&adapter, h).await,
+                            _ => false,
+                        };
+                        let v = protocol::info(&name, req.mtu, busy, psm).into_bytes();
+                        protocol::read_at(&v, req.offset)
+                            .map(<[u8]>::to_vec)
+                            .ok_or(ReqError::InvalidOffset)
+                    }
+                    .boxed()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        Characteristic {
+            uuid: RX_UUID,
+            write: Some(CharacteristicWrite {
+                write: true,
+                write_without_response: true,
+                method: CharacteristicWriteMethod::Io,
+                ..Default::default()
+            }),
+            control_handle: rx_handle,
+            ..Default::default()
+        },
+        Characteristic {
+            uuid: TX_UUID,
+            notify: Some(CharacteristicNotify {
+                notify: true,
+                method: CharacteristicNotifyMethod::Io,
+                ..Default::default()
+            }),
+            control_handle: tx_handle,
+            ..Default::default()
+        },
+    ];
+    if let Some(psm) = psm {
+        // Apple's PSM characteristic: iOS and macOS clients read it.
+        characteristics.push(Characteristic {
+            uuid: PSM_UUID,
+            read: Some(CharacteristicRead {
+                read: true,
+                fun: Box::new(move |req| {
+                    async move {
+                        protocol::read_at(&psm.to_le_bytes(), req.offset)
+                            .map(<[u8]>::to_vec)
+                            .ok_or(ReqError::InvalidOffset)
+                    }
+                    .boxed()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
     let app = Application {
         services: vec![Service {
             uuid: SERVICE_UUID,
             primary: true,
-            characteristics: vec![
-                Characteristic {
-                    uuid: INFO_UUID,
-                    read: Some(CharacteristicRead {
-                        read: true,
-                        fun: Box::new(move |req| {
-                            let holder = *info_holder.lock().unwrap();
-                            let (adapter, name) = (info_adapter.clone(), info_name.clone());
-                            async move {
-                                let busy = match holder {
-                                    Some(h) if h != req.device_address => {
-                                        is_connected(&adapter, h).await
-                                    }
-                                    _ => false,
-                                };
-                                let v = protocol::info(&name, req.mtu, busy).into_bytes();
-                                protocol::read_at(&v, req.offset)
-                                    .map(<[u8]>::to_vec)
-                                    .ok_or(ReqError::InvalidOffset)
-                            }
-                            .boxed()
-                        }),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                Characteristic {
-                    uuid: RX_UUID,
-                    write: Some(CharacteristicWrite {
-                        write: true,
-                        write_without_response: true,
-                        method: CharacteristicWriteMethod::Io,
-                        ..Default::default()
-                    }),
-                    control_handle: rx_handle,
-                    ..Default::default()
-                },
-                Characteristic {
-                    uuid: TX_UUID,
-                    notify: Some(CharacteristicNotify {
-                        notify: true,
-                        method: CharacteristicNotifyMethod::Io,
-                        ..Default::default()
-                    }),
-                    control_handle: tx_handle,
-                    ..Default::default()
-                },
-            ],
+            characteristics,
             ..Default::default()
         }],
         ..Default::default()
@@ -311,8 +428,23 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let adapter_events = session.events().await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name).await?);
-    info!("ready (BlueZ GATT application and advertisement registered)");
+    info!(
+        "ready (BlueZ GATT application and advertisement registered{})",
+        psm.map(|p| format!(", L2CAP channel on PSM 0x{p:02x}"))
+            .unwrap_or_default()
+    );
 
+    // Tells the sessions that the daemon is stopping.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let accept_task = listener.map(|l| {
+        let (adapter, args, sessions, shutdown) = (
+            adapter.clone(),
+            args.clone(),
+            sessions.clone(),
+            shutdown_rx.clone(),
+        );
+        tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
+    });
     tokio::pin!(rx_control, tx_control, adapter_events);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
@@ -332,8 +464,6 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut left_watch: Option<JoinHandle<()>> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    // Tells the active session that the daemon is stopping.
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     loop {
         *holder.lock().unwrap() = active.as_ref().map(|(a, _)| *a).or(pending.address());
@@ -509,29 +639,50 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 continue;
             }
+            let Some(counted) = Counted::admit(&sessions, addr, args.max_sessions) else {
+                info!(
+                    "{addr}: rejecting, {} sessions in progress",
+                    args.max_sessions
+                );
+                let busy = Frame::Close {
+                    reason: CloseReason::Busy,
+                    message: "no free session".into(),
+                };
+                let _ = writer.try_send(&busy.encode(0));
+                disconnect(&adapter, addr);
+                continue;
+            };
             let adapter = adapter.clone();
             let args = args.clone();
             let shutdown = shutdown_rx.clone();
             active = Some((
                 addr,
                 tokio::spawn(async move {
-                    run_session(adapter, addr, reader, writer, args, shutdown).await
+                    run_session(adapter, addr, reader, writer, args, counted, shutdown).await
                 }),
             ));
         }
     }
 
     info!("shutting down");
+    if let Some(t) = &accept_task {
+        t.abort();
+    }
+    let others = sessions.lock().unwrap().devices();
+    // The GATT session sends CLOSE, so the client learns why it ended
+    // instead of keeping an idle link to a server that is gone; L2CAP
+    // sessions end with their channel.
+    let _ = shutdown_tx.send(true);
     if let Some((addr, mut task)) = active {
-        // The session sends CLOSE, so the client learns why it ended instead
-        // of keeping an idle link to a server that is gone.
-        let _ = shutdown_tx.send(true);
         if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
             .await
             .is_err()
         {
             task.abort();
         }
+        disconnect_now(&adapter, addr).await;
+    }
+    for addr in others {
         disconnect_now(&adapter, addr).await;
     }
     drop(adv);
@@ -656,6 +807,7 @@ async fn run_session(
     reader: CharacteristicReader,
     writer: Arc<CharacteristicWriter>,
     args: Args,
+    counted: Counted,
     mut shutdown: watch::Receiver<bool>,
 ) -> SessionEnd {
     let mut tx = GattTx(writer.clone());
@@ -665,6 +817,7 @@ async fn run_session(
         id: session::new_id(),
         device: addr.to_string(),
         address_type: address_type(&adapter, addr).await.into(),
+        transport: "gatt".into(),
     };
     let id = preamble.id.clone();
     // Logs the end of the session if the task is aborted (client replaced by
@@ -694,7 +847,7 @@ async fn run_session(
         armed: true,
     };
     info!(
-        "{addr}: session {id}: client connected ({} address, notify MTU {}, write MTU {})",
+        "{addr}: session {id}: client connected (gatt, {} address, notify MTU {}, write MTU {})",
         preamble.address_type,
         writer.mtu(),
         reader.mtu()
@@ -788,8 +941,137 @@ async fn run_session(
         started.elapsed().as_secs()
     );
     drop(tx);
+    drop(counted);
     SessionEnd {
         disconnect: !lost,
         notify: clean.then_some(writer),
+    }
+}
+
+/// Accepts L2CAP channels and runs a session on each.
+async fn accept_loop(
+    listener: StreamListener,
+    adapter: Adapter,
+    args: Args,
+    sessions: Shared,
+    shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer)) => {
+                let (adapter, args, sessions, shutdown) = (
+                    adapter.clone(),
+                    args.clone(),
+                    sessions.clone(),
+                    shutdown.clone(),
+                );
+                tokio::spawn(run_l2cap_session(
+                    adapter, stream, peer, args, sessions, shutdown,
+                ));
+            }
+            Err(e) => {
+                error!("accepting an L2CAP channel failed: {e}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+/// Refuses a session on an L2CAP channel: one line before any SSH banner,
+/// then the channel closes.
+async fn refuse(mut stream: Stream, reason: &str) {
+    let _ = stream.write_all(refusal_line(reason).as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+/// Runs one session over an L2CAP channel: raw SSH between the channel and
+/// the session socket. Logged like a GATT session, with the same id in the
+/// session unit's journal.
+async fn run_l2cap_session(
+    adapter: Adapter,
+    stream: Stream,
+    peer: SocketAddr,
+    args: Args,
+    sessions: Shared,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let addr = peer.addr;
+    let address_type = match peer.addr_type {
+        AddressType::LePublic => "public",
+        AddressType::LeRandom => "random",
+        _ => "unknown",
+    };
+    let id = session::new_id();
+    let started = Instant::now();
+    let mtu = stream.as_ref().send_mtu().unwrap_or(0);
+    info!("{addr}: session {id}: client connected (l2cap, {address_type} address, MTU {mtu})");
+    let Some(counted) = Counted::admit(&sessions, addr, args.max_sessions) else {
+        info!(
+            "{addr}: session {id}: refused, {} sessions in progress",
+            args.max_sessions
+        );
+        refuse(stream, &format!("busy ({} sessions)", args.max_sessions)).await;
+        return;
+    };
+    let preamble = Preamble {
+        id: id.clone(),
+        device: addr.to_string(),
+        address_type: address_type.into(),
+        transport: "l2cap".into(),
+    };
+    let local = async {
+        let mut s = UnixStream::connect(&args.session_socket).await?;
+        s.write_all(preamble.encode().as_bytes()).await?;
+        Ok::<_, io::Error>(s)
+    }
+    .await;
+    let local = match local {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                "{addr}: session {id}: cannot start session via {}: {e}",
+                args.session_socket.display()
+            );
+            refuse(stream, "session unavailable").await;
+            drop(counted);
+            return;
+        }
+    };
+    info!("{addr}: session {id}: SSH session started");
+    let stopping = async {
+        let _ = shutdown.wait_for(|s| *s).await;
+    };
+    let result = relay::run(stream, local, bluez::is_link_end, stopping).await;
+    let (end, from_client, to_client) = match &result {
+        Ok(o) => (
+            match &o.end {
+                End::Local => "server ended the session".to_owned(),
+                End::Peer(None) => "client closed the channel".to_owned(),
+                End::Peer(Some(e)) => {
+                    format!("client disconnected: {}", bluez::link_end_reason(e))
+                }
+                End::Cancelled => "server is shutting down".to_owned(),
+            },
+            o.from_peer,
+            o.to_peer,
+        ),
+        Err(e) => (format!("channel error: {e}"), 0, 0),
+    };
+    info!(
+        "{addr}: session {id}: ended after {}s, {from_client} bytes from client, {to_client} bytes to client: {end}",
+        started.elapsed().as_secs()
+    );
+    drop(counted);
+    // The client may open another channel right away; otherwise the link
+    // goes down after a grace period, which also frees controllers that do
+    // not advertise while connected.
+    if !*shutdown.borrow() && !sessions.lock().unwrap().has(addr) {
+        let (adapter, sessions) = (adapter.clone(), sessions.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(LINK_GRACE).await;
+            if !sessions.lock().unwrap().has(addr) {
+                disconnect(&adapter, addr);
+            }
+        });
     }
 }

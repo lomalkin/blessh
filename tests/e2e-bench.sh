@@ -37,7 +37,7 @@ run() {
     ssh -F /dev/null -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=60 \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/blessh-bench_known_hosts" \
         -o HostKeyAlias="$NAME-ble" \
-        -o ProxyCommand="env RUST_LOG=info blessh $extra $ADDR 2>>$LOG" \
+        -o ProxyCommand="env RUST_LOG=info blessh proxy $extra $ADDR 2>>$LOG" \
         "$USER_NAME@$NAME-ble" "$@"
 }
 

@@ -3,8 +3,11 @@
 //! the session belongs to before it starts `sshd -i`.
 //!
 //! ```text
-//! BLESSH-SESSION/1 id=<16 hex> device=<AA:BB:CC:DD:EE:FF> type=<public|random|unknown>\n
+//! BLESSH-SESSION/1 id=<16 hex> device=<address> type=<public|random|unknown> transport=<l2cap|gatt>\n
 //! ```
+//!
+//! `device` is the client's Bluetooth address as the platform shows it: a
+//! MAC on Linux, a UUID on macOS.
 //!
 //! The socket is only accessible to the daemon's user, so the line is trusted
 //! as far as the daemon is; it is still validated strictly.
@@ -20,6 +23,7 @@ pub struct Preamble {
     pub id: String,
     pub device: String,
     pub address_type: String,
+    pub transport: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -52,8 +56,8 @@ impl Preamble {
     /// The line to send, including the trailing newline.
     pub fn encode(&self) -> String {
         format!(
-            "{MAGIC} id={} device={} type={}\n",
-            self.id, self.device, self.address_type
+            "{MAGIC} id={} device={} type={} transport={}\n",
+            self.id, self.device, self.address_type, self.transport
         )
     }
 
@@ -73,27 +77,32 @@ impl Preamble {
         let id = field("id")?;
         let device = field("device")?;
         let address_type = field("type")?;
+        let transport = field("transport")?;
         if parts.next().is_some() {
             return Err(ParseError("trailing data"));
         }
         if id.len() != 16 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err(ParseError("bad id"));
         }
-        let octets: Vec<&str> = device.split(':').collect();
-        if octets.len() != 6
-            || !octets
-                .iter()
-                .all(|o| o.len() == 2 && o.bytes().all(|c| c.is_ascii_hexdigit()))
+        if device.is_empty()
+            || device.len() > 64
+            || !device
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b':' || c == b'-')
         {
             return Err(ParseError("bad device address"));
         }
         if !matches!(address_type, "public" | "random" | "unknown") {
             return Err(ParseError("bad address type"));
         }
+        if !matches!(transport, "l2cap" | "gatt") {
+            return Err(ParseError("bad transport"));
+        }
         Ok(Self {
             id: id.into(),
             device: device.into(),
             address_type: address_type.into(),
+            transport: transport.into(),
         })
     }
 }
@@ -108,6 +117,7 @@ mod tests {
             id: new_id(),
             device: "B8:27:EB:DF:42:54".into(),
             address_type: "random".into(),
+            transport: "l2cap".into(),
         };
         let line = p.encode();
         assert!(line.len() <= MAX_LEN);
@@ -116,17 +126,21 @@ mod tests {
 
     #[test]
     fn rejects_malformed() {
-        let ok = "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public";
+        let ok = "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public transport=gatt";
         assert!(Preamble::parse(ok).is_ok());
+        let uuid = "BLESSH-SESSION/1 id=0123456789abcdef device=6ba7b810-9dad-11d1-80b4-00c04fd430c8 type=unknown transport=l2cap";
+        assert!(Preamble::parse(uuid).is_ok());
         for bad in [
             "",
             "SSH-2.0-OpenSSH_9.2",
-            "BLESSH-SESSION/2 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public",
-            "BLESSH-SESSION/1 id=0123 device=B8:27:EB:DF:42:54 type=public",
-            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42 type=public",
-            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=x",
-            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public extra",
-            "BLESSH-SESSION/1 device=B8:27:EB:DF:42:54 id=0123456789abcdef type=public",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public",
+            "BLESSH-SESSION/2 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public transport=gatt",
+            "BLESSH-SESSION/1 id=0123 device=B8:27:EB:DF:42:54 type=public transport=gatt",
+            "BLESSH-SESSION/1 id=0123456789abcdef device= type=public transport=gatt",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=x transport=gatt",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public transport=tcp",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public transport=gatt extra",
+            "BLESSH-SESSION/1 device=B8:27:EB:DF:42:54 id=0123456789abcdef type=public transport=gatt",
         ] {
             assert!(Preamble::parse(bad).is_err(), "{bad}");
         }

@@ -151,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: session::new_id(),
             device: "00:00:00:00:00:00".into(),
             address_type: "unknown".into(),
+            transport: "gatt".into(),
         };
         stream.write_all(preamble.encode().as_bytes()).await?;
         tokio::spawn(server_half(server_link, c2s_rx, s2c_tx, stream))

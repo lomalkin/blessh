@@ -87,8 +87,8 @@ fn main() {
         }
     };
     info!(
-        "session {}: BLE device {} ({} address)",
-        p.id, p.device, p.address_type
+        "session {}: BLE device {} ({} address), transport {}",
+        p.id, p.device, p.address_type, p.transport
     );
     let e = Command::new(&args.command[0])
         .args(&args.command[1..])
