@@ -45,8 +45,8 @@ services keep working. With BlueZ before 5.67 the kernel's ECRED L2CAP mode \
 is turned off while installed, which keeps EATT off as in later BlueZ \
 versions."""
 depends = "bluez (>= 5.55), openssh-server, systemd"
-conflicts = "ble-term"
-replaces = "ble-term"
+conflicts = "blessh"
+replaces = "blessh"
 section = "net"
 priority = "optional"
 maintainer-scripts = "../../packaging/linux/debian/"

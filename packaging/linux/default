@@ -1,5 +1,5 @@
-# Extra arguments for ble-term-daemon, see `ble-term-daemon --help`.
+# Extra arguments for blessh-server, see `blessh-server --help`.
 # Examples:
-#   BLE_TERM_ARGS="--name my-pi"
-#   BLE_TERM_ARGS="--adapter hci1"
-BLE_TERM_ARGS=""
+#   BLESSH_ARGS="--name my-pi"
+#   BLESSH_ARGS="--adapter hci1"
+BLESSH_ARGS=""

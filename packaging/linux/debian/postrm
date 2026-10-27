@@ -1,16 +1,11 @@
 #!/bin/sh
 set -e
 
-if [ "$1" = purge ]; then
-    # Host key of versions before 0.2.0, which had their own.
-    rm -f /etc/ble-term/ssh_host_ed25519_key /etc/ble-term/ssh_host_ed25519_key.pub
-    rmdir --ignore-fail-on-non-empty /etc/ble-term 2>/dev/null || true
-fi
-# Undo what /usr/lib/ble-term/eatt-off did on BlueZ before 5.67.
+# Undo what /usr/lib/blessh/eatt-off did on BlueZ before 5.67.
 if [ "$1" = remove ] || [ "$1" = purge ]; then
-    if [ -e /run/ble-term-ecred-off ]; then
+    if [ -e /run/blessh-ecred-off ]; then
         echo Y > /sys/module/bluetooth/parameters/enable_ecred 2>/dev/null || true
-        rm -f /run/ble-term-ecred-off
+        rm -f /run/blessh-ecred-off
     fi
 fi
 if [ -d /run/systemd/system ]; then

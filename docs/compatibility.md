@@ -1,7 +1,7 @@
 # v1 compatibility requirements
 
 Installed ConnectBot BLE builds (and later iOS or desktop clients) must keep
-working with any newer ble-term server, and the other way round. Until a v2
+working with any newer blessh server, and the other way round. Until a v2
 is deliberately introduced, the following is frozen. The normative
 description is [protocol.md](protocol.md).
 

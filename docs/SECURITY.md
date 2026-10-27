@@ -1,7 +1,7 @@
 # Security
 
 Threat model, security controls and the results of the security review of
-the ble-term server. Findings are numbered (S-n) and keep their number when
+the blessh server. Findings are numbered (S-n) and keep their number when
 their status changes.
 
 ## Reporting a vulnerability
@@ -9,7 +9,7 @@ their status changes.
 Do not report vulnerabilities in public issues. Use GitHub's private
 vulnerability reporting (Security tab, "Report a vulnerability") or a draft
 security advisory; while the repository is private, contact the
-maintainers directly. Include the affected version (`dpkg -s ble-term`),
+maintainers directly. Include the affected version (`dpkg -s blessh`),
 the BlueZ and OS versions, and steps to reproduce. Fixes go into the next
 release; only the latest release is supported. Vulnerabilities of the
 Android client belong to the client's repository.
@@ -33,7 +33,7 @@ Attackers considered:
 
 * **A1, nearby unauthenticated BLE device**: the main one.
 * **A2, local unprivileged user** on the server.
-* **A3, compromised daemon** (`_bleterm`), to bound the damage of a bug in
+* **A3, compromised daemon** (`_blessh`), to bound the damage of a bug in
   our code.
 
 Out of scope: physical access, a compromised kernel, BlueZ or OpenSSH, and
@@ -43,11 +43,11 @@ the phone.
 
 | Component | Runs as | Input from A1 | Controls |
 |---|---|---|---|
-| bluetoothd (BlueZ) | root | ATT/GATT, SMP, L2CAP | distribution package; not modified by ble-term |
-| `ble-term-daemon` | `_bleterm`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
-| `/run/ble-term/session.sock` | socket `0600 _bleterm` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
-| `ble-term-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
-| `sshd -i -f /etc/ble-term/sshd_config` | root, then the user | SSH protocol | OpenSSH with the system SSH server's configuration (the file only includes `/etc/ssh/sshd_config`) |
+| bluetoothd (BlueZ) | root | ATT/GATT, SMP, L2CAP | distribution package; not modified by blessh |
+| `blessh-server` | `_blessh`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
+| `/run/blessh/session.sock` | socket `0600 _blessh` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
+| `blessh-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
+| `sshd -i -f /etc/blessh/sshd_config` | root, then the user | SSH protocol | OpenSSH with the system SSH server's configuration (the file only includes `/etc/ssh/sshd_config`) |
 
 The SSH host keys are the system's (`0600 root`); the daemon reads only the
 public key, to log its fingerprint.
@@ -65,7 +65,7 @@ public key, to log its fingerprint.
 | S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
 | S-8 | Info | Accepted | BLE addresses in the audit log are weak identities |
 | S-9 | Info | Accepted | The daemon is trusted for the audit fields it passes on |
-| S-10 | Info | Fixed (0.1.3) | Integer overflow in `ble-term-session --timeout` |
+| S-10 | Info | Fixed (0.1.3) | Integer overflow in `blessh-session --timeout` |
 | S-11 | Medium | Fixed (0.2.0) | BLE logins did not follow the system SSH server's policy |
 
 ### S-1 Forged journal entries through CLOSE messages
@@ -74,7 +74,7 @@ The CLOSE frame carries a free-text message from the peer. The daemon (and
 the desktop client) logged it verbatim. Under systemd the daemon writes to
 the journal through a stream, where a newline starts a new entry and a
 `<N>` prefix sets its priority; an unauthenticated peer could therefore add
-arbitrary entries attributed to `ble-term-daemon`, including fake audit
+arbitrary entries attributed to `blessh-server`, including fake audit
 lines. Fixed: peer text is escaped (`protocol::printable`) and truncated to
 200 characters before logging.
 
@@ -142,14 +142,14 @@ in the system configuration (`AllowGroups` above the `Include` line,
 
 ### S-5 D-Bus access of the daemon
 
-The daemon talks to BlueZ as `_bleterm` (group `bluetooth`). BlueZ's D-Bus
+The daemon talks to BlueZ as `_blessh` (group `bluetooth`). BlueZ's D-Bus
 policy lets it call every BlueZ method: pair and connect devices, change
 adapter settings. On Raspberry Pi OS the default policy even grants this to
 every local user (Debian's BlueZ package does the same). The most serious
 use for an attacker who has taken over the daemon (A3) would be to pair
 and trust their own BLE keyboard and type on the server.
 
-Fixed: `/usr/share/dbus-1/system.d/ble-term.conf` denies `_bleterm` every
+Fixed: `/usr/share/dbus-1/system.d/blessh.conf` denies `_blessh` every
 call to BlueZ except the ones the daemon makes (`GetManagedObjects`,
 `Properties.Get`, registering and unregistering the GATT application and
 the advertisement, `Device1.Disconnect`); rules for a user override the
@@ -169,7 +169,7 @@ over the network with the same rights anyway.
 ### S-7 Host name broadcast
 
 The advertisement and the INFO characteristic contain the host name, which
-anyone nearby can read. Use `--name` in `/etc/default/ble-term` to
+anyone nearby can read. Use `--name` in `/etc/default/blessh` to
 advertise something else; the installer says so on first installation.
 
 ### S-8 Weak identities in the audit log
@@ -184,8 +184,8 @@ a later protocol version.
 
 ### S-9 Audit fields from the daemon
 
-`ble-term-session` (root) logs the session id and device address the daemon
-sends. Only `_bleterm` can connect to the session socket, so the line is as
+`blessh-session` (root) logs the session id and device address the daemon
+sends. Only `_blessh` can connect to the session socket, so the line is as
 trustworthy as the daemon; a compromised daemon (A3) could forge it, but
 gains nothing else: sshd still authenticates.
 
@@ -197,11 +197,11 @@ from the radio). Fixed with saturating arithmetic.
 ### S-11 BLE login policy differed from the system's
 
 Up to 0.1.3 BLE sessions ran sshd with a configuration of their own
-(`-f /etc/ble-term/sshd_config` replaces `/etc/ssh/sshd_config`) and their
+(`-f /etc/blessh/sshd_config` replaces `/etc/ssh/sshd_config`) and their
 own host key. Passwords were allowed over BLE even where the administrator
 had turned them off for network SSH, and `AllowUsers`, `Match` blocks or
 drop-ins in `sshd_config.d` did not apply; nothing pointed this out. Fixed
-in 0.2.0: `/etc/ble-term/sshd_config` only includes `/etc/ssh/sshd_config`,
+in 0.2.0: `/etc/blessh/sshd_config` only includes `/etc/ssh/sshd_config`,
 the system host keys are used, and the installer prints the resulting
 policy (passwords, root login, allowed users). Settings for BLE alone can
 go above the `Include`. `tests/e2e-package.sh` checks this in CI.

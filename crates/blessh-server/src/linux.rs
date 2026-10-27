@@ -1,4 +1,4 @@
-//! ble-term-daemon: exposes the BleStream GATT service through BlueZ and
+//! blessh-server: exposes the BleStream GATT service through BlueZ and
 //! forwards each BLE client to a session socket (normally a systemd socket
 //! that spawns `sshd -i` per connection).
 
@@ -45,7 +45,7 @@ struct Args {
     #[arg(long)]
     name: Option<String>,
     /// Stream socket that starts a session for every connection.
-    #[arg(long, default_value = "/run/ble-term/session.sock")]
+    #[arg(long, default_value = "/run/blessh/session.sock")]
     session_socket: PathBuf,
     /// Seconds a client may take to complete the BleStream handshake.
     #[arg(long, default_value_t = 10)]
@@ -125,7 +125,7 @@ pub async fn main() {
 fn host_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_owned())
-        .unwrap_or_else(|_| "ble-term".into())
+        .unwrap_or_else(|_| "blessh".into())
 }
 
 /// Why an adapter is off, with the command that fixes it.
@@ -648,7 +648,7 @@ async fn address_type(adapter: &Adapter, addr: Address) -> &'static str {
 ///
 /// Every session gets a random id. The daemon logs it with the device
 /// address when the session starts and with duration, byte counts and the
-/// way it ended when it is over; ble-term-session logs the same id in the
+/// way it ended when it is over; blessh-session logs the same id in the
 /// journal of the sshd it starts, which ties logins to BLE devices.
 async fn run_session(
     adapter: Adapter,

@@ -1,7 +1,7 @@
 # BleStream v1
 
 BleStream carries one reliable, ordered, flow-controlled byte stream in each
-direction over a pair of GATT characteristics. ble-term runs SSH over it: the
+direction over a pair of GATT characteristics. blessh runs SSH over it: the
 client's SSH library talks to a per-connection `sshd -i` on the server.
 
 ## GATT layout
@@ -41,7 +41,7 @@ positions, so v1 does not support EATT; both sides should have it off
 (BlueZ: `Channels = 1` in the `[GATT]` section of `main.conf`, the default
 since 5.67; on older BlueZ the server package keeps EATT off by turning off
 the kernel's ECRED mode; phones open EATT only on encrypted links, and
-ble-term links are not encrypted).
+blessh links are not encrypted).
 
 ## Frames
 

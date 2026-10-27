@@ -1,19 +1,19 @@
 [Unit]
-Description=SSH over Bluetooth LE (ble-term GATT server)
-Documentation=file:///usr/share/doc/ble-term/README.md
-After=bluetooth.service ble-term-session.socket
-Requires=ble-term-session.socket
+Description=SSH over Bluetooth LE (blessh GATT server)
+Documentation=file:///usr/share/doc/blessh-server/README.md
+After=bluetooth.service blessh-session.socket
+Requires=blessh-session.socket
 # Registrations live on the D-Bus connection to bluetoothd, so restart with it.
 PartOf=bluetooth.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/default/ble-term
+EnvironmentFile=-/etc/default/blessh
 # As root ("+"): keeps BlueZ < 5.67 from asking phones to pair.
-ExecStartPre=+/usr/lib/ble-term/eatt-off
-ExecStart=/usr/sbin/ble-term-daemon $BLE_TERM_ARGS
-User=_bleterm
-Group=_bleterm
+ExecStartPre=+/usr/lib/blessh/eatt-off
+ExecStart=/usr/sbin/blessh-server $BLESSH_ARGS
+User=_blessh
+Group=_blessh
 SupplementaryGroups=bluetooth
 Restart=on-failure
 RestartSec=5

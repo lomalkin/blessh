@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-CONF=/etc/ble-term/sshd_config
+CONF=/etc/blessh/sshd_config
 KEY=/etc/ssh/ssh_host_ed25519_key.pub
 
 # The installer prints one table of checks, then the host key, the login
@@ -25,8 +25,8 @@ check_bluez() {
     fi
 }
 
-# BlueZ before 5.67 enables EATT; /usr/lib/ble-term/eatt-off turns it off
-# when ble-term.service starts, unless main.conf sets Channels (README,
+# BlueZ before 5.67 enables EATT; /usr/lib/blessh/eatt-off turns it off
+# when blessh-server.service starts, unless main.conf sets Channels (README,
 # "Bookworm").
 check_eatt() {
     dpkg --compare-versions "$BLUEZ" lt 5.67 || return 0
@@ -37,7 +37,7 @@ check_eatt() {
     elif [ -n "$ch" ]; then
         row EATT "on (Channels = $ch)" WARN "phones are asked to pair"
     elif [ "$ecred" = Y ]; then
-        row EATT on WARN "sudo systemctl restart ble-term"
+        row EATT on WARN "sudo systemctl restart blessh-server"
     else
         row EATT "off (kernel ECRED)" OK
     fi
@@ -49,7 +49,7 @@ check_bluetooth_service() {
     elif systemctl -q is-active bluetooth.service; then
         row bluetooth.service "enabled, running" OK
     else
-        row bluetooth.service "enabled, stopped" WARN "ble-term starts it on demand"
+        row bluetooth.service "enabled, stopped" WARN "blessh starts it on demand"
     fi
 }
 
@@ -81,7 +81,7 @@ check_adapter() {
             esac
         fi
     done
-    [ -n "$found" ] || row Adapter "none found" WARN "ble-term waits for one"
+    [ -n "$found" ] || row Adapter "none found" WARN "blessh waits for one"
 }
 
 check_sshd() {
@@ -93,24 +93,17 @@ check_sshd() {
 }
 
 check_daemon() {
-    if ! systemctl -q is-active ble-term.service; then
-        row ble-term "not running" FAIL "journalctl -u ble-term"
+    if ! systemctl -q is-active blessh-server.service; then
+        row blessh-server "not running" FAIL "journalctl -u blessh-server"
     elif [ -z "$ADAPTER_OK" ]; then
-        row ble-term "running, waiting" WARN "starts serving once the adapter is on"
+        row blessh-server "running, waiting" WARN "starts serving once the adapter is on"
     else
-        row ble-term running OK
+        row blessh-server running OK
     fi
 }
 
-# Up to 0.1.x the package had its own host key; clients pinned it.
-check_host_key_change() {
-    [ -n "$1" ] || return 0
-    dpkg --compare-versions "$1" lt 0.2.0 || return 0
-    row "Host key" "changed since 0.1.x" NOTE "clients see a key change once"
-}
-
 # BLE sessions run sshd with the system SSH server's configuration
-# (/etc/ble-term/sshd_config includes /etc/ssh/sshd_config).
+# (/etc/blessh/sshd_config includes /etc/ssh/sshd_config).
 summary() {
     if [ -f "$KEY" ]; then
         fp=$(ssh-keygen -l -f "$KEY" | awk '{ print $2 }')
@@ -135,42 +128,41 @@ summary() {
 # Printed on first installation only.
 commands() {
     echo
-    printf '  %-8s  %-8s  %s\n' Commands stop "sudo systemctl stop ble-term"
-    printf '  %-8s  %-8s  %s\n' "" start "sudo systemctl start ble-term"
-    printf '  %-8s  %-8s  %s\n' "" disable "sudo systemctl disable --now ble-term ble-term-session.socket"
-    printf '  %-8s  %-8s  %s\n' "" enable "sudo systemctl enable --now ble-term-session.socket ble-term"
-    printf '  %-8s  %-8s  %s\n' "" rename "BLE_TERM_ARGS=\"--name NAME\" in /etc/default/ble-term, then restart"
+    printf '  %-8s  %-8s  %s\n' Commands stop "sudo systemctl stop blessh-server"
+    printf '  %-8s  %-8s  %s\n' "" start "sudo systemctl start blessh-server"
+    printf '  %-8s  %-8s  %s\n' "" disable "sudo systemctl disable --now blessh-server blessh-session.socket"
+    printf '  %-8s  %-8s  %s\n' "" enable "sudo systemctl enable --now blessh-session.socket blessh-server"
+    printf '  %-8s  %-8s  %s\n' "" rename "BLESSH_ARGS=\"--name NAME\" in /etc/default/blessh, then restart"
 }
 
 if [ "$1" = configure ]; then
-    systemd-sysusers ble-term.conf
+    systemd-sysusers blessh.conf
     systemd=
     if [ -d /run/systemd/system ]; then
         systemd=1
-        # The D-Bus policy names _bleterm; the bus ignores it if it read the
+        # The D-Bus policy names _blessh; the bus ignores it if it read the
         # file before systemd-sysusers created the user.
         systemctl reload dbus.service 2>/dev/null || true
         systemctl daemon-reload
-        systemctl enable ble-term-session.socket ble-term.service >/dev/null
-        systemctl restart ble-term-session.socket
+        systemctl enable blessh-session.socket blessh-server.service >/dev/null
+        systemctl restart blessh-session.socket
         # Also when bluetoothd is not running: the daemon starts it through
         # D-Bus activation if bluetooth.service is enabled.
         if systemctl -q is-active bluetooth.service || systemctl -q is-enabled bluetooth.service; then
-            systemctl restart ble-term.service
+            systemctl restart blessh-server.service
         fi
     fi
 
     # sshd -t / -T need sshd's privilege separation directory; sessions get it
-    # from ble-term-session@.service, but ssh.service may never have run.
+    # from blessh-session@.service, but ssh.service may never have run.
     install -d -m 0755 /run/sshd
-    echo "ble-term $(dpkg-query -W -f '${Version}' ble-term): SSH over Bluetooth LE"
+    echo "blessh-server $(dpkg-query -W -f '${Version}' blessh-server): SSH over Bluetooth LE"
     check_bluez
     check_eatt
     [ -z "$systemd" ] || check_bluetooth_service
     check_adapter
     check_sshd
     [ -z "$systemd" ] || check_daemon
-    check_host_key_change "$2"
     echo
     summary
     if [ -z "$2" ]; then

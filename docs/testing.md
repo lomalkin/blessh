@@ -1,4 +1,4 @@
-# Testing ble-term
+# Testing blessh
 
 Checks come in three tiers by cost. The hardware procedure (tier 3 and the
 bench part of tier 2) records its results in [hardware.md](hardware.md):
@@ -14,7 +14,7 @@ done until these pass.
 |---|---|
 | Formatting, lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` |
 | Protocol state machine (Rust) | `cargo test` |
-| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `ble-term-session` | `tests/e2e-loopback.sh` |
+| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh-session` | `tests/e2e-loopback.sh` |
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
 | Packages for arm64, amd64, armhf; ARMv6 unit tests on an emulated ARM1176 | jobs `deb`, `deb-armhf` |
@@ -34,7 +34,7 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 | Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani --no-default-features --lib` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
-| Bench: client and server over the radio (`ble-term-connect` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB) |
+| Bench: client and server over the radio (`blessh` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB) |
 | Bench: install and upgrade | S1, S13 and the other cases below that need no phone |
 
 Bench nodes are shared: before a run, say which nodes it uses and for how
@@ -52,7 +52,7 @@ each bench server, from the installation of the release candidate.
 Server:
 
 ```
-sudo apt install ./ble-term_<version>_<arch>.deb
+sudo apt install ./blessh-server_<version>_<arch>.deb
 ```
 
 The output shows the SSH host key fingerprint (the system's, the same as
@@ -62,17 +62,17 @@ login, allowed users). If Bluetooth is off, the
 installer says so and how to switch it on. Then check:
 
 ```
-systemctl status ble-term.service ble-term-session.socket
-journalctl -u ble-term -n 20     # ends with "ready (BlueZ GATT application and advertisement registered)"
+systemctl status blessh-server.service blessh-session.socket
+journalctl -u blessh-server -n 20     # ends with "ready (BlueZ GATT application and advertisement registered)"
 ```
 
-On Bookworm (BlueZ 5.66) the journal of `ble-term.service` says that ECRED
+On Bookworm (BlueZ 5.66) the journal of `blessh-server.service` says that ECRED
 was turned off (README, "Bookworm"); the phone must not show a pairing
 request.
 
 The daemon advertises the host name. To change it, set
-`BLE_TERM_ARGS="--name my-pi"` in `/etc/default/ble-term` and run
-`sudo systemctl restart ble-term`.
+`BLESSH_ARGS="--name my-pi"` in `/etc/default/blessh` and run
+`sudo systemctl restart blessh-server`.
 
 Android client (ConnectBot BLE, package `io.github.aluminique.connectbot.ble`,
 installs next to a Play Store ConnectBot):
@@ -85,10 +85,10 @@ installs next to a Play Store ConnectBot):
 Desktop Linux client (optional):
 
 ```
-sudo apt install ./ble-term_<version>_<arch>.deb
-sudo systemctl disable --now ble-term.service ble-term-session.socket   # client-only machine
-ble-term-connect --scan
-ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-ble <user>@<name>-ble
+sudo apt install ./blessh-server_<version>_<arch>.deb
+sudo systemctl disable --now blessh-server.service blessh-session.socket   # client-only machine
+blessh --scan
+ssh -o ProxyCommand='blessh <server-address>' -o HostKeyAlias=<name>-ble <user>@<name>-ble
 ```
 
 ## Cases
@@ -106,31 +106,31 @@ ssh -o ProxyCommand='ble-term-connect <server-address>' -o HostKeyAlias=<name>-b
 | S9 | Second client | A second client while one is connected is refused with "another client is connected"; the first session is unaffected |
 | S10 | Server reboot | After a reboot (and a `systemctl soft-reboot`, where the system uses it) the units start, the server is discoverable, login works |
 | S11 | Bluetooth off and on on the server | `bluetoothctl power off`, then `on`: the server becomes discoverable again and login works |
-| S12 | Audit log | `journalctl -u ble-term` has session start and end lines with the device address and session id; the matching `ble-term-session@*` unit has the same id followed by the sshd login line |
+| S12 | Audit log | `journalctl -u blessh-server` has session start and end lines with the device address and session id; the matching `blessh-session@*` unit has the same id followed by the sshd login line |
 | S13 | Upgrade | Installing a newer package over the old one ends the active session (expected) and the server works afterwards |
 | S14 | Long session | A session idle or in use for an hour or more stays alive |
-| S15 | D-Bus policy | `sudo -u _bleterm dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0 org.bluez.Adapter1.StartDiscovery` fails with `AccessDenied`; S2, S3, S7 and S8 pass |
+| S15 | D-Bus policy | `sudo -u _blessh dbus-send --system --print-reply --dest=org.bluez /org/bluez/hci0 org.bluez.Adapter1.StartDiscovery` fails with `AccessDenied`; S2, S3, S7 and S8 pass |
 
 ### Audit log (S12)
 
 ```
-journalctl -u ble-term | grep 'session '
-journalctl -u 'ble-term-session@*' --grep '<session id>'   # names the unit
-journalctl -u 'ble-term-session@<n>-…'                      # that session's sshd lines
+journalctl -u blessh-server | grep 'session '
+journalctl -u 'blessh-session@*' --grep '<session id>'   # names the unit
+journalctl -u 'blessh-session@<n>-…'                      # that session's sshd lines
 ```
 
 ## What to report on failure
 
-* `journalctl -u ble-term -u 'ble-term-session@*' --since '10 min ago'`
+* `journalctl -u blessh-server -u 'blessh-session@*' --since '10 min ago'`
 * `bluetoothctl --version`, `uname -r`, `/etc/os-release`
 * Client: Android version and phone model; for app problems
   `adb logcat -d | grep -i -e BleStream -e "BLE " -e ConnectBot`
 
 ## Troubleshooting knobs
 
-* `--readvertise` in `BLE_TERM_ARGS`: if the server stops being discoverable
+* `--readvertise` in `BLESSH_ARGS`: if the server stops being discoverable
   after the first session, this re-registers the advertisement after each
   session. Off by default because it broke reconnects in the
   virtual-controller tests.
-* `RUST_LOG=debug` in `/etc/default/ble-term` (as an extra line) for verbose
+* `RUST_LOG=debug` in `/etc/default/blessh` (as an extra line) for verbose
   daemon logs.

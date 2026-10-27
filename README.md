@@ -1,4 +1,4 @@
-# ble-term
+# blessh
 
 SSH sessions over Bluetooth Low Energy for Linux (BlueZ). Reference
 platform: Raspberry Pi with Raspberry Pi OS / Debian Bookworm or Trixie
@@ -6,12 +6,12 @@ platform: Raspberry Pi with Raspberry Pi OS / Debian Bookworm or Trixie
 [docs/hardware.md](docs/hardware.md).
 
 ```
-phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──▶ ble-term-daemon (_bleterm)
+phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──▶ blessh-server (_blessh)
                                                                      │ AF_UNIX
-                                       systemd ble-term-session.socket (Accept=yes)
+                                       systemd blessh-session.socket (Accept=yes)
                                                                      ▼
-                                       ble-term-session (logs the BLE device) → exec
-                                       sshd -i -f /etc/ble-term/sshd_config  →  PAM, PTY, shell
+                                       blessh-session (logs the BLE device) → exec
+                                       sshd -i -f /etc/blessh/sshd_config  →  PAM, PTY, shell
 ```
 
 * **No BlueZ reconfiguration.** The daemon registers a GATT service and an
@@ -25,8 +25,8 @@ phone (ConnectBot BLE)  ──BLE GATT──▶  bluetoothd ──D-Bus/fd──
   configuration of `/etc/ssh/sshd_config` (authentication, allowed users,
   host keys): whatever is allowed or refused over the network is allowed or
   refused over BLE.
-* **Unprivileged daemon.** Radio input is parsed by `_bleterm`; the only root
-  code is `ble-term-session`, which reads one line from the daemon and execs
+* **Unprivileged daemon.** Radio input is parsed by `_blessh`; the only root
+  code is `blessh-session`, which reads one line from the daemon and execs
   OpenSSH's `sshd`, started per connection by systemd. The network SSH
   service can stay disabled.
 * **Session lifetime = BLE connection.** On disconnect sshd gets EOF and the
@@ -46,16 +46,16 @@ Packages are on the repository's Releases page: `arm64` for 64-bit and
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-sudo apt install ./ble-term_<version>_arm64.deb
+sudo apt install ./blessh-server_<version>_arm64.deb
 ```
 
-The package creates the `_bleterm` user (allowed only the BlueZ calls the
+The package creates the `_blessh` user (allowed only the BlueZ calls the
 daemon needs, through a D-Bus policy), enables and starts
-`ble-term-session.socket` and `ble-term.service`, and prints a table of
+`blessh-session.socket` and `blessh-server.service`, and prints a table of
 checks (BlueZ version, Bluetooth service and adapter, sshd configuration,
 daemon; each with OK, WARN or FAIL and what to do), the SSH host key
 fingerprint and the login policy BLE sessions get. `sudo dpkg-reconfigure
-ble-term` prints it again. Show the fingerprint alone with
+blessh` prints it again. Show the fingerprint alone with
 
 ```
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
@@ -63,26 +63,26 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 
 ### SSH settings
 
-BLE sessions run `sshd -i -f /etc/ble-term/sshd_config`, and that file only
+BLE sessions run `sshd -i -f /etc/blessh/sshd_config`, and that file only
 includes `/etc/ssh/sshd_config`: the system SSH server's settings and host
 keys apply, with its `sshd_config.d` drop-ins. `ssh.service` itself may stay
 disabled. Settings meant for BLE sessions only go above the `Include` line
-in `/etc/ble-term/sshd_config` (sshd uses the first value it reads). sshd
+in `/etc/blessh/sshd_config` (sshd uses the first value it reads). sshd
 sees no source address for BLE clients, so `Match Address` blocks do not
 apply to them. Show what BLE sessions get:
 
 ```
-sudo sshd -T -f /etc/ble-term/sshd_config
+sudo sshd -T -f /etc/blessh/sshd_config
 ```
 
 Before 0.2.0 the package had its own host key and its own settings
 (passwords allowed); see [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md).
 
-Logs: `journalctl -u ble-term -u 'ble-term-session@*'`.
+Logs: `journalctl -u blessh-server -u 'blessh-session@*'`.
 
-Audit: every session gets a random id. `ble-term.service` logs it with the
+Audit: every session gets a random id. `blessh-server.service` logs it with the
 client's BLE address when the session starts, and with duration, byte counts
-and how it ended when it is over. The session's `ble-term-session@…` unit
+and how it ended when it is over. The session's `blessh-session@…` unit
 logs the same id and address, followed by sshd's login lines. Note that
 phones use private BLE addresses that change every few minutes, so the
 address identifies a connection rather than a phone.
@@ -90,11 +90,11 @@ address identifies a connection rather than a phone.
 Upgrades restart the daemon, which ends an active BLE session; the client
 is told that the server is shutting down and has to reconnect.
 
-BLE logins are possible while `ble-term.service` and
-`ble-term-session.socket` run. Stop until the next boot:
-`sudo systemctl stop ble-term.service`. Disable:
-`sudo systemctl disable --now ble-term.service ble-term-session.socket`.
-Remove: `sudo apt purge ble-term`.
+BLE logins are possible while `blessh-server.service` and
+`blessh-session.socket` run. Stop until the next boot:
+`sudo systemctl stop blessh-server.service`. Disable:
+`sudo systemctl disable --now blessh-server.service blessh-session.socket`.
+Remove: `sudo apt purge blessh-server`.
 
 Requirements: BlueZ ≥ 5.55 (tested design targets 5.66 and 5.82), OpenSSH
 server package (only the `sshd` binary is used), systemd. The Bluetooth adapter
@@ -102,7 +102,7 @@ must be on; the daemon waits for it and logs what to do if it is blocked by
 rfkill (`sudo rfkill unblock bluetooth`) or powered off
 (`bluetoothctl power on`). The package does not change the rfkill state.
 
-`ble-term.service` starts with `bluetooth.target` and, for boots where that
+`blessh-server.service` starts with `bluetooth.target` and, for boots where that
 target does not come up (a systemd soft-reboot, where the adapter is
 already there), with `multi-user.target`; it then starts bluetoothd through
 D-Bus activation if `bluetooth.service` is enabled.
@@ -110,7 +110,7 @@ D-Bus activation if `bluetooth.service` is enabled.
 ### Desktop systems
 
 Desktop Bluetooth settings (KDE, GNOME, blueman) switch the adapter off or
-block it with rfkill, and restore that state at login; ble-term then waits
+block it with rfkill, and restore that state at login; blessh then waits
 until Bluetooth is on again. Some desktops record "off" by mistake when the
 system shuts down, because bluetoothd stops before the desktop session; the
 adapter is then off after every reboot. Fix it in the desktop settings
@@ -130,7 +130,7 @@ authentication and encryption. Recommended:
   can try passwords, and sshd cannot rate-limit BLE clients by source
   (docs/SECURITY.md, S-4).
 * Limit who may log in over BLE only with `AllowGroups` above the
-  `Include` line in `/etc/ble-term/sshd_config`.
+  `Include` line in `/etc/blessh/sshd_config`.
 * Use BlueZ 5.76 or later (Debian trixie). With older BlueZ, other BLE
   devices nearby can break an active session or observe its encrypted
   traffic and keystroke timing; the installer warns about this.
@@ -142,20 +142,20 @@ Threat model, findings and checks: [docs/SECURITY.md](docs/SECURITY.md).
 BlueZ before 5.67 enables EATT (several ATT channels per connection,
 `Channels = 3`) by default. When a phone connects, bluetoothd opens an extra
 EATT channel to it; the phone accepts EATT only on an encrypted link, so
-bluetoothd asks the phone to pair. ble-term does not use pairing. Cancel or
+bluetoothd asks the phone to pair. blessh does not use pairing. Cancel or
 no answer drops the connection (no answer: after 30 s); accepting fails
 ("pairing rejected") but the session survives, and the request returns once
 the phone changes its random address. BlueZ 5.67 turned EATT off
 by default (upstream commit "main: Disable EATT by default"), so Debian 13
 and later are not affected.
 
-ble-term handles this itself. On BlueZ before 5.67, `ble-term.service`
-first runs `/usr/lib/ble-term/eatt-off`, which turns off the kernel's
+blessh handles this itself. On BlueZ before 5.67, `blessh-server.service`
+first runs `/usr/lib/blessh/eatt-off`, which turns off the kernel's
 enhanced credit based L2CAP mode (ECRED, the
 `enable_ecred` parameter of the `bluetooth` module). EATT needs it, so
 bluetoothd's EATT attempt fails quietly and the phone is never asked to
 pair: the same behaviour as BlueZ 5.67 and later. Neither bluez's
-configuration nor bluetoothd is touched; the journal of `ble-term.service`
+configuration nor bluetoothd is touched; the journal of `blessh-server.service`
 says when this happens. Effects and limits:
 
 * Lasts until reboot and is renewed on every start of the service;
@@ -169,17 +169,17 @@ says when this happens. Effects and limits:
 
 ## Desktop client
 
-`ble-term-connect` (in the same package, or `cargo build --release`) is an
+`blessh` (in the same package, or `cargo build --release`) is an
 OpenSSH ProxyCommand for Linux machines with BlueZ:
 
 ```
-ble-term-connect --scan                       # list servers
-ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' -o HostKeyAlias=my-pi user@my-pi
+blessh --scan                       # list servers
+ssh -o ProxyCommand='blessh AA:BB:CC:DD:EE:FF' -o HostKeyAlias=my-pi user@my-pi
 ```
 
 The client machine needs EATT off as well (`Channels = 1` in the `[GATT]`
 section of `/etc/bluetooth/main.conf`, the default since BlueZ 5.67);
-`ble-term-connect` warns if it is on.
+`blessh` warns if it is on.
 
 If one of the two machines also publishes a GATT service that requires
 encryption, the other machine's bluetoothd may try to pair with it on its
@@ -202,5 +202,5 @@ publishes a release with `SHA256SUMS` and the commit subjects since the
 previous tag. Untagged CI builds are versioned `X.Y.Z~ciN`, which sorts
 before the `X.Y.Z` release.
 
-`ble-term-loopback` runs both protocol ends over a simulated link (small MTU,
+`blessh-loopback` runs both protocol ends over a simulated link (small MTU,
 packet reordering) and is what the end-to-end test uses.

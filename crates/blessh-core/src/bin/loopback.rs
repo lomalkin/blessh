@@ -1,9 +1,9 @@
-//! ble-term-loopback: runs the client and server halves of BleStream in one
+//! blessh-loopback: runs the client and server halves of BleStream in one
 //! process over a simulated BLE link (small MTU, optional reordering), with
 //! stdin/stdout on the client side. Used to test the full SSH path without
 //! a radio:
 //!
-//!   ssh -o ProxyCommand='ble-term-loopback --exec "/usr/sbin/sshd -i -f cfg"' user@test
+//!   ssh -o ProxyCommand='blessh-loopback --exec "/usr/sbin/sshd -i -f cfg"' user@test
 
 use std::{io, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 

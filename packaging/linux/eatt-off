@@ -10,13 +10,13 @@
 # BlueZ versions uses outside experimental LE Audio. bluetoothd opens EATT
 # per connection, so it does not need a restart.
 #
-# Runs as root before ble-term-daemon starts. An explicit Channels setting
+# Runs as root before blessh-server starts. An explicit Channels setting
 # in main.conf is the administrator's choice and is left alone. The
 # setting lasts until reboot; removing the package restores it.
 #
-# BLE_TERM_ECRED and BLE_TERM_STATE exist for tests.
-PARAM=${BLE_TERM_ECRED:-/sys/module/bluetooth/parameters/enable_ecred}
-STATE=${BLE_TERM_STATE:-/run/ble-term-ecred-off}
+# BLESSH_ECRED and BLESSH_STATE exist for tests.
+PARAM=${BLESSH_ECRED:-/sys/module/bluetooth/parameters/enable_ecred}
+STATE=${BLESSH_STATE:-/run/blessh-ecred-off}
 
 v=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null) || exit 0
 dpkg --compare-versions "$v" lt 5.67 || exit 0

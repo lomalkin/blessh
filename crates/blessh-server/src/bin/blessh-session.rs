@@ -1,4 +1,4 @@
-//! ble-term-session: started by ble-term-session@.service with the session
+//! blessh-session: started by blessh-session@.service with the session
 //! socket on stdin/stdout. Reads the preamble line written by the daemon,
 //! logs the session id and BLE device (so the journal of this unit ties the
 //! sshd log lines to a device), then replaces itself with the given command,

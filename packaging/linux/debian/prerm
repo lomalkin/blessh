@@ -2,8 +2,8 @@
 set -e
 
 if [ -d /run/systemd/system ] && [ "$1" = remove ]; then
-    systemctl stop ble-term.service ble-term-session.socket || true
-    systemctl disable ble-term.service ble-term-session.socket >/dev/null || true
+    systemctl stop blessh-server.service blessh-session.socket || true
+    systemctl disable blessh-server.service blessh-session.socket >/dev/null || true
 fi
 
 exit 0

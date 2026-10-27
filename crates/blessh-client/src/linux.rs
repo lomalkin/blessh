@@ -1,7 +1,7 @@
-//! ble-term-connect: desktop client that connects to a ble-term server and
+//! blessh: desktop client that connects to a blessh server and
 //! relays the session over stdin/stdout. Intended as an OpenSSH ProxyCommand:
 //!
-//!   ssh -o ProxyCommand='ble-term-connect AA:BB:CC:DD:EE:FF' user@pi
+//!   ssh -o ProxyCommand='blessh AA:BB:CC:DD:EE:FF' user@pi
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -26,7 +26,7 @@ use log::{debug, info, warn};
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Connect to a ble-term server and relay stdin/stdout (OpenSSH ProxyCommand)"
+    about = "Connect to a blessh server and relay stdin/stdout (OpenSSH ProxyCommand)"
 )]
 struct Args {
     /// Server address (AA:BB:CC:DD:EE:FF) or advertised name; omit to use the first server found.
@@ -79,7 +79,7 @@ pub async fn main() {
     match run(args).await {
         Ok(code) => std::process::exit(code),
         Err(e) => {
-            eprintln!("ble-term-connect: {e}");
+            eprintln!("blessh: {e}");
             std::process::exit(1);
         }
     }
@@ -209,7 +209,7 @@ fn eatt_channels(conf: &str) -> Option<u8> {
 /// Why this machine's BlueZ may open several ATT bearers (EATT), which
 /// BleStream v1 does not support. BlueZ before 5.67 does so by default.
 fn eatt_hint() -> Option<String> {
-    // EATT needs the kernel's ECRED L2CAP mode; the ble-term package turns
+    // EATT needs the kernel's ECRED L2CAP mode; the blessh package turns
     // it off on BlueZ before 5.67 (README, "Bookworm").
     let ecred = std::fs::read_to_string("/sys/module/bluetooth/parameters/enable_ecred");
     if ecred.is_ok_and(|v| v.trim() == "N") {
@@ -232,7 +232,7 @@ fn eatt_hint() -> Option<String> {
     old.then(|| format!("BlueZ {version} enables EATT by default"))
 }
 
-/// Waits until no other ble-term-connect of this user uses the device, and
+/// Waits until no other blessh of this user uses the device, and
 /// keeps it that way while the returned file is open. ssh does not wait for
 /// its ProxyCommand to exit, so a second connection made right away can start
 /// while the previous client is still disconnecting; sharing the link
@@ -242,10 +242,7 @@ async fn lock_device(addr: Address) -> Option<std::fs::File> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let name = format!(
-        "ble-term-connect-{}.lock",
-        addr.to_string().replace(':', "")
-    );
+    let name = format!("blessh-{}.lock", addr.to_string().replace(':', ""));
     let file = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -263,11 +260,11 @@ async fn lock_device(addr: Address) -> Option<std::fs::File> {
             return Some(file);
         }
         if attempt == 0 {
-            info!("waiting for another ble-term-connect to release {addr}");
+            info!("waiting for another blessh to release {addr}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    warn!("another ble-term-connect still uses {addr}, connecting anyway");
+    warn!("another blessh still uses {addr}, connecting anyway");
     None
 }
 
@@ -291,7 +288,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         if args.scan {
             return Ok(0);
         }
-        return Err("no ble-term server found".into());
+        return Err("no blessh server found".into());
     };
     let _lock = lock_device(dev.address()).await;
     info!("connecting to {}", dev.address());
@@ -309,7 +306,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         }
     }
     let Some(chars) = characteristics(&dev).await? else {
-        return Err("device does not provide the ble-term service".into());
+        return Err("device does not provide the blessh service".into());
     };
     if let Some(c) = &chars.info {
         match c.read().await {

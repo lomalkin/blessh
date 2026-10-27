@@ -1,19 +1,19 @@
 #!/bin/sh
 # End-to-end test over real BlueZ with two virtual controllers (btvirt):
-# ble-term-daemon serves on hci0 as an unprivileged user, ble-term-connect
+# blessh-server serves on hci0 as an unprivileged user, blessh
 # connects from hci1 as an OpenSSH ProxyCommand. sshd is started per
-# connection by systemd-socket-activate and ble-term-session, mimicking
-# ble-term-session.socket.
+# connection by systemd-socket-activate and blessh-session, mimicking
+# blessh-session.socket.
 #
 # DAEMON_USER=<user> runs the daemon as that user (through sudo) to test the
-# D-Bus policy: install packaging/dbus.conf with _bleterm replaced by that
+# D-Bus policy: install packaging/dbus.conf with _blessh replaced by that
 # user into the bus configuration first. The test then also checks that the
 # user is denied BlueZ calls the daemon does not need.
 set -eu
 
 BIN=$(pwd)/target/debug
 SERVER=${SERVER:-00:AA:01:00:00:00}
-T=/tmp/ble-term-vhci
+T=/tmp/blessh-vhci
 rm -rf "${T:?}"
 mkdir -p "$T"
 
@@ -31,18 +31,18 @@ PidFile none
 LogLevel ERROR
 CFG
 
-systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/ble-term-session" -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
+systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/blessh-session" -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
     > "$T/socket-activate.log" 2>&1 &
 SA=$!
 if [ -n "${DAEMON_USER:-}" ]; then
-    cp "$BIN/ble-term-daemon" "$T/"
+    cp "$BIN/blessh-server" "$T/"
     sleep 1
     chmod 666 "$T/session.sock"
     sudo -u "$DAEMON_USER" env RUST_LOG=debug ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} \
-        "$T/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
+        "$T/blessh-server" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
         --host-key "$T/hostkey.pub" > "$T/daemon.log" 2>&1 &
 else
-    RUST_LOG=debug "$BIN/ble-term-daemon" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
+    RUST_LOG=debug "$BIN/blessh-server" --adapter hci0 --name vhci-server --session-socket "$T/session.sock" \
         --host-key "$T/hostkey.pub" > "$T/daemon.log" 2>&1 &
 fi
 D=$!
@@ -50,10 +50,10 @@ trap 'kill $D $SA 2>/dev/null || true' EXIT
 sleep 3
 
 # Successive clients share the one LE link from hci1: let the previous
-# ble-term-connect finish (it disconnects on exit) before starting the next.
+# blessh finish (it disconnects on exit) before starting the next.
 wait_link_down() {
     for _ in $(seq 40); do
-        pgrep -x ble-term-connec > /dev/null || return 0
+        pgrep -x blessh-connec > /dev/null || return 0
         sleep 0.25
     done
 }
@@ -62,7 +62,7 @@ run() {
     wait_link_down
     timeout 120 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" -o HostKeyAlias=vhci-server \
-        -o ProxyCommand="env RUST_LOG=info $BIN/ble-term-connect ${CONNECT_ARGS:-} --adapter hci1 $SERVER 2>>$T/connect.log" \
+        -o ProxyCommand="env RUST_LOG=info $BIN/blessh ${CONNECT_ARGS:-} --adapter hci1 $SERVER 2>>$T/connect.log" \
         "$(id -un)@vhci-server" "$@"
 }
 
@@ -71,14 +71,14 @@ run() {
 run_keep() {
     timeout 60 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" -o HostKeyAlias=vhci-server \
-        -o ProxyCommand="env RUST_LOG=info $BIN/ble-term-connect --keep-link --adapter hci1 $SERVER 2>>$T/connect.log" \
+        -o ProxyCommand="env RUST_LOG=info $BIN/blessh --keep-link --adapter hci1 $SERVER 2>>$T/connect.log" \
         "$(id -un)@vhci-server" "$@"
 }
 
 # With btvirt the first scans after start-up sometimes see no advertisement
 # at all (not seen on real controllers); wait until the server is visible.
 for _ in 1 2 3 4 5 6; do
-    "$BIN/ble-term-connect" --adapter hci1 --scan --scan-timeout 8 2>/dev/null | grep -q "$SERVER" && break
+    "$BIN/blessh" --adapter hci1 --scan --scan-timeout 8 2>/dev/null | grep -q "$SERVER" && break
 done
 
 head -c 100000 /dev/urandom > "$T/blob"
@@ -106,7 +106,7 @@ echo "== session ends when the client disappears"
 (run -tt 'sleep 4242' < /dev/null > /dev/null 2>&1 &)
 sleep 8
 pgrep -x sleep -a | grep -q 4242 || { echo "FAIL: remote command did not start"; exit 1; }
-pkill -x ble-term-connec
+pkill -x blessh-connec
 sleep 5
 if pgrep -x sleep -a | grep -q 4242; then echo "FAIL: session survived disconnect"; exit 1; fi
 

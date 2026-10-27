@@ -1,14 +1,14 @@
 #!/bin/sh
 # Basic end-to-end checks over the radio between two bench machines: run on
-# the client machine, against a ble-term server nearby (tier 2 in
+# the client machine, against a blessh server nearby (tier 2 in
 # docs/testing.md).
 #
 #   tests/e2e-bench.sh [-k key] [-s bytes] [-u user] <server BLE address> <server name>
 #
 # The server name is the one it advertises (INFO `name`); it also names the
 # host key entry. The public key (-k, default ~/.ssh/id_ed25519) must be in
-# the user's authorized_keys on the server, and ble-term-connect must be
-# installed here. Host key pins go to ~/.ssh/ble-term-bench_known_hosts.
+# the user's authorized_keys on the server, and blessh must be
+# installed here. Host key pins go to ~/.ssh/blessh-bench_known_hosts.
 set -u
 
 KEY=$HOME/.ssh/id_ed25519
@@ -35,9 +35,9 @@ run() {
     extra=$1
     shift
     ssh -F /dev/null -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=60 \
-        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/ble-term-bench_known_hosts" \
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/.ssh/blessh-bench_known_hosts" \
         -o HostKeyAlias="$NAME-ble" \
-        -o ProxyCommand="env RUST_LOG=info ble-term-connect $extra $ADDR 2>>$LOG" \
+        -o ProxyCommand="env RUST_LOG=info blessh $extra $ADDR 2>>$LOG" \
         "$USER_NAME@$NAME-ble" "$@"
 }
 
@@ -55,7 +55,7 @@ rate() { awk "BEGIN { printf \"%.1f KB/s\", $SIZE / 1000 / ($2 - $1) }"; }
 
 head -c "$SIZE" /dev/urandom > "$T/blob"
 want=$(sha256sum < "$T/blob" | cut -d' ' -f1)
-remote=/tmp/ble-term-bench.$$
+remote=/tmp/blessh-bench.$$
 
 out=$(run "" echo hello)
 [ "$out" = hello ]
@@ -100,7 +100,7 @@ check "no reordering or EATT warning" $?
 marker=$((40000 + $$ % 10000))
 (run "" -tt "sleep $marker" < /dev/null > /dev/null 2>&1 &)
 sleep 12
-for p in $(ps -eo pid,args | awk -v a="$ADDR" '$2 == "ble-term-connect" && $NF == a { print $1 }'); do
+for p in $(ps -eo pid,args | awk -v a="$ADDR" '$2 == "blessh" && $NF == a { print $1 }'); do
     kill "$p"
 done
 sleep 6

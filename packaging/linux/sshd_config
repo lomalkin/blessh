@@ -1,7 +1,7 @@
 # sshd configuration for SSH sessions over Bluetooth LE.
 #
-# Each BLE client gets its own `sshd -i -f /etc/ble-term/sshd_config` from
-# ble-term-session@.service. BLE is one more way into the system SSH
+# Each BLE client gets its own `sshd -i -f /etc/blessh/sshd_config` from
+# blessh-session@.service. BLE is one more way into the system SSH
 # server: all settings, including the host keys, come from
 # /etc/ssh/sshd_config, included below. ssh.service does not have to be
 # running.
@@ -9,10 +9,10 @@
 # sshd uses the first value it reads for most keywords, so settings placed
 # above the Include apply to BLE sessions only and win over the system
 # configuration, for example:
-#AllowGroups ble-term
+#AllowGroups blessh
 # sshd sees no source address for BLE clients ("UNKNOWN"), so `Match
 # Address` blocks in the system configuration do not apply to them.
 # Show the settings BLE sessions get:
-#   sudo sshd -T -f /etc/ble-term/sshd_config
+#   sudo sshd -T -f /etc/blessh/sshd_config
 
 Include /etc/ssh/sshd_config

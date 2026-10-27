@@ -1,9 +1,9 @@
 //! Session preamble: one text line the daemon writes to the session socket
-//! before the SSH stream, so that `ble-term-session` can log which BLE device
+//! before the SSH stream, so that `blessh-session` can log which BLE device
 //! the session belongs to before it starts `sshd -i`.
 //!
 //! ```text
-//! BLE-TERM-SESSION/1 id=<16 hex> device=<AA:BB:CC:DD:EE:FF> type=<public|random|unknown>\n
+//! BLESSH-SESSION/1 id=<16 hex> device=<AA:BB:CC:DD:EE:FF> type=<public|random|unknown>\n
 //! ```
 //!
 //! The socket is only accessible to the daemon's user, so the line is trusted
@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-pub const MAGIC: &str = "BLE-TERM-SESSION/1";
+pub const MAGIC: &str = "BLESSH-SESSION/1";
 /// Upper bound for the line, including the newline.
 pub const MAX_LEN: usize = 128;
 
@@ -116,17 +116,17 @@ mod tests {
 
     #[test]
     fn rejects_malformed() {
-        let ok = "BLE-TERM-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public";
+        let ok = "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public";
         assert!(Preamble::parse(ok).is_ok());
         for bad in [
             "",
             "SSH-2.0-OpenSSH_9.2",
-            "BLE-TERM-SESSION/2 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public",
-            "BLE-TERM-SESSION/1 id=0123 device=B8:27:EB:DF:42:54 type=public",
-            "BLE-TERM-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42 type=public",
-            "BLE-TERM-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=x",
-            "BLE-TERM-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public extra",
-            "BLE-TERM-SESSION/1 device=B8:27:EB:DF:42:54 id=0123456789abcdef type=public",
+            "BLESSH-SESSION/2 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public",
+            "BLESSH-SESSION/1 id=0123 device=B8:27:EB:DF:42:54 type=public",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42 type=public",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=x",
+            "BLESSH-SESSION/1 id=0123456789abcdef device=B8:27:EB:DF:42:54 type=public extra",
+            "BLESSH-SESSION/1 device=B8:27:EB:DF:42:54 id=0123456789abcdef type=public",
         ] {
             assert!(Preamble::parse(bad).is_err(), "{bad}");
         }
