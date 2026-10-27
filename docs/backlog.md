@@ -2,6 +2,14 @@
 
 Ideas worth doing, not scheduled yet.
 
+## ble-term-connect
+
+* Find servers by name when the name comes only in the scan response
+  (README, "Known issue"). With the service UUID discovery filter, BlueZ
+  did not record the name from the scan response; an unfiltered scan did.
+  Possible fix: when the target is a name, scan without the UUID filter
+  (or with `pattern`) and check both the name and the advertised UUID.
+
 ## Clients
 
 Options for clients beyond Android and Linux, cheapest first (details:

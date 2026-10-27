@@ -189,6 +189,16 @@ whichever side is the server; phones are not affected. Turn off BLE MIDI in
 WirePlumber, or start the other machine's bluetoothd without the MIDI
 plugin (`-P midi`).
 
+Known issue: `ble-term-connect <name>` may not find a server it has not seen
+before, with "no ble-term server found", while `ble-term-connect --scan`
+lists the server with an empty name. The server sends its name in the scan
+response, and the client's BlueZ, scanning with ble-term's service UUID as
+the filter, does not record it. Seen with a MediaTek MT7921 client
+(BlueZ 5.82) and a server on a Realtek USB adapter; the controller
+received the scan response with the name. Connect by address instead, or
+run `bluetoothctl scan le` once: BlueZ then knows the name and connecting
+by name works.
+
 ## Development
 
 ```
