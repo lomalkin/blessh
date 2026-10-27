@@ -42,8 +42,9 @@ Notes on devices:
   the link drops, with the Flipper as server or as client (README, "Desktop
   client"). Stop WirePlumber for bench runs; phones are not affected.
 * **Raspberry Pi 3 B+:** after hours of heavy bench use its controller
-  (BCM43455 on UART) once reported "hardware error 0x00"; the reset failed
-  and the adapter stayed off until a reboot. Not seen on the other boards.
+  (BCM43455 on UART) reported "hardware error 0x00" (twice so far); the
+  reset failed and the adapter stayed off until a reboot. Not seen on the
+  other boards.
 * **Raspberry Pi Zero 2 W:** logins take 3 to 11 s over BLE (Pi 3 B+ and
   Pi 5: 3 to 4 s). The link runs at a 48.75 ms connection interval without
   data length extension, and the controller sends about one 27 byte packet
@@ -71,9 +72,17 @@ the second.
 | 2026-10-25 | Pi 3 B+ → Pi 5 | 0.2.1~ci52 arm64 | 10/10 | 5.4–6.1 KB/s |
 | 2026-10-26 | Pi 3 B+ → Flipper One F2 | 0.2.2-1 arm64 | 10/10 | |
 | 2026-10-26 | Flipper One F2 → Pi Zero 2 W | 0.2.2-1 arm64 | 10/10 | Release candidate: 8/10 and 3 of 25 back-to-back sessions cut about 2 s in, by the server's deferred disconnect of the previous link (fixed before the release); release: 10/10 |
+| 2026-10-27 | Raspberry Pi 3 Model B+ Rev 1.3 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-v8 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.3-1, 0.2.4-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | — | pass | pass | pass | — | pass | pass | S9: the first session stays up while a second client is told "server is busy" (before 0.2.3 it ended a second or two later). S14: an idle session stayed alive for 60 min. After about a day up and hours of bench use the controller reported "hardware error 0x00" again; fine after a reboot |
+| 2026-10-27 | Raspberry Pi Zero 2 W Rev 1.0 | Raspberry Pi OS (Debian 12 bookworm), 64-bit, image 2026-10-06 | 6.12.109+rpt-rpi-v8 | 5.66-1+rpt2+deb12u2 | 9.2p1 | 0.2.3-1, 0.2.4-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | — | pass | pass | pass | — | pass | — | S9 as on the Pi 3 B+; before 0.2.3 the first session ended with a protocol error (BlueZ 5.66 passed the second client's writes into it) |
+| 2026-10-27 | Raspberry Pi 5 Model B Rev 1.1 | Raspberry Pi OS (Debian 13 trixie), 64-bit, image 2026-10-06 | 6.18.50+rpt-rpi-2712 | 5.82-1.1+rpt2 | 10.0p1 | 0.2.3-1, 0.2.4-1 arm64 | `ble-term-connect` on another bench node | pass | pass | pass | — | — | — | pass | — | pass | — | — | — | pass | pass | S14: output every 30 s for 70 min, all lines received |
 | 2026-10-26 | Pi Zero 2 W → Pi 3 B+ | 0.2.2-1 arm64 | 10/10 | |
 | 2026-10-26 | Pi 3 B+ → Pi 5 | 0.2.2-1 arm64 | 10/10 | |
 | 2026-10-26 | Pi Zero 2 W → Flipper One F2 | 0.2.2-1 arm64 | 100/100 | Sessions back to back (`echo`) |
+| 2026-10-27 | Pi 3 B+ → Pi Zero 2 W | 0.2.3-1 arm64 | 4/4 | |
+| 2026-10-27 | Pi Zero 2 W → Pi 3 B+ | 0.2.3-1 arm64 | 3/4, repeat 4/4 | One link loss 1 s into a session |
+| 2026-10-27 | Pi 3 B+ → Pi 5, Pi Zero 2 W → Pi 5 | 0.2.3-1 arm64 | 4/4 each | |
+| 2026-10-27 | Pi Zero 2 W → Pi 3 B+ | 0.2.3-1, 0.2.4-1 arm64 | 99/100 each | Sessions back to back. 0.2.3: one `ble-term-connect` found the previous link still going down ("GATT services have not been resolved"; fixed in 0.2.4). 0.2.4: one connection setup failed (`le-connection-abort-by-local`) |
+| 2026-10-27 | Pi 3 B+ → Pi 5 | 0.2.4-1 arm64 | 100/100 | Sessions back to back |
 
 Earlier builds failed sessions started right after a previous one (fixed in
 0.1.3: sockets of a link that went down, leftovers before HELLO, two
@@ -89,3 +98,4 @@ session).
 | 2026-10-25 | Google Pixel 8 Pro | GrapheneOS (Android 17) | ble-r1 … ble-r5 | all bench servers | pass | Scan, login, compression, rotation, background, reconnect, CLOSE on server restart; pairing request detected with EATT turned on (ble-r4 showed the hint only in the app log) |
 | 2026-10-26 | Android 11 phone | Android 11 | ble-r3 … ble-r5 | bench servers | pass | Scan finds nothing while location is off (Android holds results back); ble-r5 says so in the scan dialog, not yet checked on the phone. Up to ble-r2 the app crashed after login on servers with an ECDSA host key (sshlib on Android 12 and older); worked around since ble-r3 |
 | 2026-10-26 | Android 8 phone | Android 8 | ble-r3 | bench servers | pass | Scan and BLE login |
+| 2026-10-27 | Android 11 and Android 8 (Huawei P9) phones | Android 11, Android 8 | ble-r6 | bench servers | pass | Login without the client's former sshlib workaround (sshlib 0.6.5); the Android 8 phone also finds servers with location off. Two phones at once: the second was told the server is busy, but the first one's session ended a few seconds later (BlueZ, see docs/protocol.md; servers from 0.2.3 avoid it) |
