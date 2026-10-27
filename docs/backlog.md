@@ -3,10 +3,20 @@
 Ideas worth doing, not scheduled yet, and open points from the blessh
 rework (2026-10).
 
+## macOS
+
+* The GATT stream on macOS (client and server): CoreBluetooth
+  notifications and writes without response, gated on
+  `canSendWriteWithoutResponse`; until then macOS needs L2CAP peers.
+* Wake the channel thread on writes instead of its 10 ms tick (a run loop
+  source), and bound sessions per device as on Linux.
+* A signed `.pkg` instead of the install script; a Homebrew formula for
+  the client.
+* Verify on hardware: CoreBluetooth against BlueZ over the channel, the
+  permission prompt for a LaunchAgent, sleep and logout behaviour.
+
 ## Clients
 
-* macOS client and server on CoreBluetooth (the workspace already builds
-  on macOS with stub platform modules).
 * Android: L2CAP channel in ConnectBot BLE (`createInsecureL2capChannel`,
   API 29); the GATT stream keeps working meanwhile.
 * iOS app, sharing the CoreBluetooth code with the macOS client.

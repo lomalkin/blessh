@@ -19,7 +19,7 @@ not done until these pass.
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
 | Packages for arm64 and amd64 (both `blessh-server` and `blessh-client`) | job `deb`; locally `tests/docker/build-deb.sh` |
 | Packages in clean bookworm and trixie: BLE sessions get the system SSH configuration, the client runs, purge | job `package` (`tests/e2e-package.sh`; locally `tests/docker/test-package.sh`) |
-| macOS build and unit tests | job `macos` |
+| macOS build, unit tests and the tarball with the launchd jobs | job `macos` |
 | Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
 
 ## Tier 2: long checks and bench tests, on request
@@ -36,7 +36,7 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
 | Bench: client and server over the radio (`blessh` on one bench node, server on another), both directions | `tests/e2e-bench.sh <address> <name>` on the client node (see the script; about 3 minutes for 30 KB over the GATT stream, seconds over the channel) |
-| Bench: two client devices at the same time, phones, CoreBluetooth clients | by hand; not covered by btvirt (see architecture.md, "Verified so far") |
+| Bench: two client devices at the same time, phones, the macOS client and server against Linux and each other | by hand; not covered by btvirt (see architecture.md, "Verified so far"); the macOS binaries were built and started but could not reach Bluetooth without the permission prompt being answered |
 | Bench: install and upgrade | S1, S13 and the other cases below that need no phone |
 
 Bench nodes are shared: before a run, say which nodes it uses and for how

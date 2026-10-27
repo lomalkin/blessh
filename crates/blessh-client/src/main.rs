@@ -7,13 +7,17 @@
 mod cli;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use clap::Parser;
 
 #[cfg(target_os = "linux")]
 use linux as platform;
+#[cfg(target_os = "macos")]
+use macos as platform;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod platform {
     use crate::cli::{ProxyArgs, ScanArgs};
 

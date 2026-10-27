@@ -1,0 +1,12 @@
+# sshd configuration for SSH sessions over Bluetooth LE on macOS.
+#
+# Each BLE session gets its own `sshd -i -f /etc/blessh/sshd_config` from
+# the org.blessh.session launchd job. All settings, including the host
+# keys, come from /etc/ssh/sshd_config, included below; Remote Login does
+# not have to be on. Settings placed above the Include apply to BLE
+# sessions only, for example:
+#AllowGroups blessh
+# sshd sees no source address for BLE clients ("UNKNOWN"), so `Match
+# Address` blocks in the system configuration do not apply to them.
+
+Include /etc/ssh/sshd_config

@@ -143,8 +143,8 @@ jobs:
           apt-get update
           tests/e2e-package.sh dist/blessh-server_*.deb dist/blessh-client_*.deb
 
-  # macOS: the workspace builds and its platform-independent tests pass;
-  # the binaries are packaged as a tarball for bench tests.
+  # macOS: client and server on CoreBluetooth, packaged as a tarball with
+  # the launchd jobs and an install script (packaging/macos).
   macos:
     runs-on: macos-14
     steps:
@@ -156,9 +156,13 @@ jobs:
       - name: Tarball
         run: |
           ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          mkdir -p dist/blessh-$ver-macos-arm64
-          cp target/release/blessh target/release/blessh-server target/release/blessh-session dist/blessh-$ver-macos-arm64/
-          tar -C dist -czf dist/blessh-$ver-macos-arm64.tar.gz blessh-$ver-macos-arm64
+          d=dist/blessh-$ver-macos-arm64
+          mkdir -p $d
+          cp target/release/blessh target/release/blessh-server target/release/blessh-session $d/
+          cp packaging/macos/install.sh packaging/macos/uninstall.sh packaging/macos/sshd_config \
+             packaging/macos/org.blessh.server.plist packaging/macos/org.blessh.session.plist $d/
+          cp README.md docs/protocol.md $d/
+          tar -C dist -czf $d.tar.gz blessh-$ver-macos-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: blessh-macos-arm64

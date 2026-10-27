@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>org.blessh.cli</string>
+	<key>CFBundleName</key>
+	<string>blessh</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>blessh carries SSH sessions over Bluetooth Low Energy.</string>
+</dict>
+</plist>

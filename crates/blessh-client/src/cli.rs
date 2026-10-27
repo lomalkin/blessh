@@ -10,7 +10,7 @@
 //! advertises or its Bluetooth address, and the rest is passed to the
 //! system ssh together with a ProxyCommand that runs `blessh proxy`.
 
-use std::{os::unix::process::CommandExt, process::Command};
+use std::{future::Future, os::unix::process::CommandExt, process::Command};
 
 use clap::{Args, Parser};
 
@@ -165,6 +165,18 @@ fn sets_option(args: &[String], name: &str) -> bool {
                 has(v)
             }
         })
+    })
+}
+
+/// Resolves when ssh ends its ProxyCommand (SIGHUP or SIGTERM).
+pub fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
+    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    Ok(async move {
+        tokio::select! {
+            _ = hup.recv() => {}
+            _ = term.recv() => {}
+        }
     })
 }
 

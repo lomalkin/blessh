@@ -12,10 +12,17 @@ blessh-core = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 libc = { workspace = true }
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { workspace = true }
 libdbus-sys = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSStream", "NSRunLoop", "NSDate", "NSString", "NSArray", "NSDictionary", "NSData", "NSError", "NSUUID", "NSObject", "NSValue", "NSObjCRuntime", "NSEnumerator"] }
+objc2-core-bluetooth = { version = "0.3", features = ["CBCentralManager", "CBManager", "CBPeripheral", "CBPeer", "CBUUID", "CBService", "CBCharacteristic", "CBAttribute", "CBL2CAPChannel", "CBPeripheralManager", "CBATTRequest", "CBCentral", "CBError", "CBAdvertisementData", "CBDescriptor", "dispatch2"] }
+dispatch2 = "0.3"
 
 [lints]
 workspace = true

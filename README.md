@@ -173,6 +173,28 @@ whichever side is the server; phones are not affected. Turn off BLE MIDI in
 WirePlumber, or start the other machine's bluetoothd without the MIDI
 plugin (`-P midi`).
 
+## macOS
+
+The macOS build (`blessh-<version>-macos-arm64.tar.gz` on the Releases
+page) has the same client and a server on CoreBluetooth; both use the
+L2CAP channel (the GATT stream is not available on macOS yet, so the
+server needs clients with L2CAP: Linux, macOS, Android 10 and later, iOS).
+Unpack and run `sudo ./install.sh` from the account that should serve BLE
+sessions: the BLE server runs as that user through a LaunchAgent, because
+macOS grants Bluetooth to logged-in users only, and `sshd -i` runs as root
+through a LaunchDaemon with `inetdCompatibility`, like Apple's own ssh job.
+`/etc/blessh/sshd_config` includes the system `sshd_config`; Remote Login
+does not have to be on. Sessions are logged in `/tmp/blessh-server.log`
+and `/var/log/blessh-session.log`. `./uninstall.sh` removes it all.
+
+The first use of Bluetooth from a terminal makes macOS ask for permission,
+attributed to the terminal app; until it is granted, `blessh` and
+`blessh-server` report "macOS has not decided whether this program may use
+Bluetooth". macOS shows no Bluetooth addresses: `blessh scan` lists
+CoreBluetooth's device identifiers instead, and `blessh user@<name>`
+selects by advertised name. The server is only reachable while the user
+is logged in.
+
 ## Security
 
 Anyone within Bluetooth range can connect to the server and try to log in;

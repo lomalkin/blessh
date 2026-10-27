@@ -34,7 +34,7 @@ fit together. The wire details are in [protocol.md](protocol.md).
 | Platform | Server | Client | Transport |
 |---|---|---|---|
 | Linux, BlueZ ≥ 5.55 | yes (this repository) | yes (this repository) | L2CAP channel, GATT stream as fallback |
-| macOS | planned (user session only: macOS allows BLE to logged-in users) | planned | L2CAP channel, GATT stream |
+| macOS | yes (this repository; user session only, since macOS allows BLE to logged-in users; L2CAP clients only) | yes (this repository; L2CAP only) | L2CAP channel |
 | Android 10 and later | no | ConnectBot BLE (GATT today; L2CAP planned) | L2CAP channel, GATT stream |
 | Android 5 to 9 | no | ConnectBot BLE | GATT stream |
 | iOS 11 and later | no | planned | L2CAP channel, GATT stream |
@@ -79,12 +79,14 @@ crates/blessh-core     protocol code without I/O: BleStream frames and link stat
                        machine, the byte relay for channels, INFO, the session
                        preamble; the loopback test harness
 crates/blessh-ble      platform Bluetooth layer shared by server and client:
-                       BlueZ today (GATT packet transports, L2CAP helpers),
-                       CoreBluetooth next
+                       BlueZ (GATT packet transports, L2CAP helpers) and
+                       CoreBluetooth (central, peripheral, L2CAP streams)
 crates/blessh-server   blessh-server (daemon) and blessh-session (root helper)
 crates/blessh-client   blessh: ssh wrapper, scan, proxy
 packaging/linux        systemd units, sshd_config, D-Bus policy, sysusers,
                        maintainer scripts
+packaging/macos        Info.plist embedded in the binaries, launchd jobs,
+                       install script
 web/                   web client (planned)
 ```
 
@@ -100,9 +102,18 @@ Every session, whichever transport, becomes one connection to
 `sshd_config`. sshd sees the client as "UNKNOWN", so `Match Address` and
 `PerSourcePenalties` do not apply to BLE.
 
+On macOS the server is a LaunchAgent in the user's session (CoreBluetooth
+refuses daemons), hands every channel to a launchd socket with
+`inetdCompatibility` where `blessh-session` and `sshd -i` run as root, and
+serves INFO and the PSM but not the GATT stream. CoreBluetooth's managers
+run their delegates on a private dispatch queue; a channel's NSStreams are
+served by a thread of their own and appear as a tokio stream.
+
 The client (`blessh`) finds the server through bluetoothd, connects, reads
 INFO, opens the channel through the kernel (or the GATT stream through
-bluetoothd) and relays stdin and stdout for ssh. `blessh user@server`
+bluetoothd) and relays stdin and stdout for ssh. On macOS it does the same
+through CoreBluetooth, selecting servers by name or CoreBluetooth
+identifier, since the system shows no Bluetooth addresses. `blessh user@server`
 execs the system ssh with a ProxyCommand and a HostKeyAlias, so every ssh
 feature works unchanged.
 

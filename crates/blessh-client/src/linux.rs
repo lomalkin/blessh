@@ -21,7 +21,7 @@ use bluer::{
 use futures::StreamExt;
 use log::{debug, info, warn};
 
-use crate::cli::{ProxyArgs, ScanArgs};
+use crate::cli::{stop_signal, ProxyArgs, ScanArgs};
 
 /// How long opening the L2CAP channel may take, link setup included.
 const L2CAP_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -396,18 +396,6 @@ async fn gatt_session(
         let link = Link::new(size, args.window);
         relay_gatt(link, GattRx(notify), GattTx(Arc::new(writer))).await
     }
-}
-
-/// Resolves when ssh ends its ProxyCommand (SIGHUP or SIGTERM).
-fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
-    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    Ok(async move {
-        tokio::select! {
-            _ = hup.recv() => {}
-            _ = term.recv() => {}
-        }
-    })
 }
 
 /// Relays stdin/stdout over the L2CAP channel; returns the exit code.
