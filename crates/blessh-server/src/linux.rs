@@ -4,7 +4,8 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use ble_term::{
+use blessh_ble::bluez::{GattRx, GattTx};
+use blessh_core::{
     bridge::{self, BridgeError, Outcome, PacketTx},
     link::Link,
     logging,
@@ -112,7 +113,7 @@ impl Pending {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+pub async fn main() {
     logging::init("info");
     let args = Args::parse();
     if let Err(e) = serve(args).await {
@@ -652,12 +653,12 @@ async fn address_type(adapter: &Adapter, addr: Address) -> &'static str {
 async fn run_session(
     adapter: Adapter,
     addr: Address,
-    mut reader: CharacteristicReader,
+    reader: CharacteristicReader,
     writer: Arc<CharacteristicWriter>,
     args: Args,
     mut shutdown: watch::Receiver<bool>,
 ) -> SessionEnd {
-    let mut tx = writer.clone();
+    let mut tx = GattTx(writer.clone());
     let mut link = Link::new(writer.mtu(), args.window);
     let started = Instant::now();
     let preamble = Preamble {
@@ -698,6 +699,7 @@ async fn run_session(
         writer.mtu(),
         reader.mtu()
     );
+    let mut reader = GattRx(reader);
 
     let result = async {
         let initial = bridge::handshake(

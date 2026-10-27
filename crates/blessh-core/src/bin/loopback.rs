@@ -7,7 +7,7 @@
 
 use std::{io, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
-use ble_term::{
+use blessh_core::{
     bridge::{self, PacketRx, PacketTx},
     link::Link,
     logging,

@@ -7,7 +7,7 @@
 use std::{io, time::Duration};
 
 use arbitrary::Arbitrary;
-use ble_term::{
+use blessh_core::{
     bridge::{self, PacketRx, PacketTx},
     link::Link,
     protocol::{CloseReason, Frame, MAX_FRAME},

@@ -1,16 +1,16 @@
 #!/bin/sh
-# End-to-end test without a radio: OpenSSH client -> ble-term-loopback
+# End-to-end test without a radio: OpenSSH client -> blessh-loopback
 # (BleStream client and server over a simulated BLE link) -> unprivileged
 # `sshd -i`. The last round goes through a session socket and
-# ble-term-session, as the packaged units do.
-# Usage: tests/e2e-loopback.sh [path/to/ble-term-loopback]
+# blessh-session, as the packaged units do.
+# Usage: tests/e2e-loopback.sh [path/to/blessh-loopback]
 set -eu
 
-BIN=${1:-target/debug/ble-term-loopback}
+BIN=${1:-target/debug/blessh-loopback}
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
 SSHD=${SSHD:-/usr/sbin/sshd}
 T=$(mktemp -d)
-SESSION=$(dirname "$BIN")/ble-term-session
+SESSION=$(dirname "$BIN")/blessh-session
 SA=
 trap '[ -z "$SA" ] || kill $SA 2>/dev/null; rm -rf "$T"' EXIT
 
@@ -52,7 +52,7 @@ for cfg in "20 0" "20 5" "185 3" "512 0"; do
     tty=$(run "$1" "$2" -tt 'tty' < /dev/null 2>/dev/null | tr -d '\r')
     case $tty in /dev/pts/*) ;; *) echo "FAIL: no pty: $tty"; exit 1 ;; esac
 done
-echo "== session socket and ble-term-session"
+echo "== session socket and blessh-session"
 systemd-socket-activate -l "$T/session.sock" --inetd -a \
     "$SESSION" -- "$SSHD" -i -f "$T/sshd_config" -E "$T/sshd.log" > "$T/session.log" 2>&1 &
 SA=$!

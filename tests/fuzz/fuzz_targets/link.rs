@@ -5,7 +5,7 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use ble_term::{
+use blessh_core::{
     link::{Event, Link},
     protocol::{CloseReason, Frame, MAX_FRAME},
 };

@@ -1,0 +1,31 @@
+[package]
+name = "blessh-core"
+description = "SSH over Bluetooth LE: protocol and session code shared by the server and the clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "blessh_core"
+path = "src/lib.rs"
+
+# Both protocol ends over a simulated link; used by tests/e2e-loopback.sh.
+[[bin]]
+name = "blessh-loopback"
+path = "src/bin/loopback.rs"
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+uuid = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

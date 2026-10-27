@@ -1,5 +1,5 @@
 [package]
-name = "ble-term-fuzz"
+name = "blessh-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-ble-term = { path = "../..", default-features = false }
+blessh-core = { path = "../../crates/blessh-core" }
 tokio = { version = "1", features = ["rt", "time", "io-util", "sync", "macros", "test-util"] }
 
 [[bin]]

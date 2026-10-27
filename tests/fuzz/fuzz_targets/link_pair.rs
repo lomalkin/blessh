@@ -6,7 +6,7 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use ble_term::link::{Event, Link};
+use blessh_core::link::{Event, Link};
 use libfuzzer_sys::fuzz_target;
 
 #[derive(Arbitrary, Debug)]

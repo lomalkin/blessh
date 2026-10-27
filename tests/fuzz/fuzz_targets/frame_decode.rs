@@ -2,7 +2,7 @@
 //! packet that decodes to the same frame.
 #![no_main]
 
-use ble_term::protocol::Frame;
+use blessh_core::protocol::Frame;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|pkt: &[u8]| {

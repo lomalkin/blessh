@@ -22,20 +22,6 @@ pub trait PacketTx {
     async fn send(&mut self, pkt: &[u8]) -> io::Result<()>;
 }
 
-#[cfg(feature = "bluez")]
-impl PacketRx for bluer::gatt::CharacteristicReader {
-    async fn recv(&mut self) -> io::Result<Vec<u8>> {
-        bluer::gatt::CharacteristicReader::recv(self).await
-    }
-}
-
-#[cfg(feature = "bluez")]
-impl PacketTx for std::sync::Arc<bluer::gatt::CharacteristicWriter> {
-    async fn send(&mut self, pkt: &[u8]) -> io::Result<()> {
-        bluer::gatt::CharacteristicWriter::send(self, pkt).await
-    }
-}
-
 const REORDER_WARNING: &str = "frames arrive out of order: the link uses several ATT \
     bearers (EATT), which BleStream v1 does not support and which can break the session; \
     set Channels = 1 in the [GATT] section of /etc/bluetooth/main.conf on both sides";

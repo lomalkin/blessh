@@ -1,0 +1,21 @@
+[package]
+name = "blessh-ble"
+description = "SSH over Bluetooth LE: platform Bluetooth layer shared by the server and the client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blessh-core = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { workspace = true }
+libdbus-sys = { workspace = true }
+
+[lints]
+workspace = true

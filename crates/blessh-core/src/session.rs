@@ -35,10 +35,10 @@ impl std::error::Error for ParseError {}
 
 /// Random 64-bit session id as 16 hex digits.
 pub fn new_id() -> String {
+    use std::io::Read;
     let mut b = [0u8; 8];
-    // SAFETY: the buffer is valid for b.len() bytes.
-    let n = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
-    if n != b.len() as isize {
+    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
+    if random.is_err() {
         // Fall back to time and pid; ids only need to be unique in the logs.
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

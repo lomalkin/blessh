@@ -6,7 +6,7 @@
 
 use std::{os::unix::process::CommandExt, process::Command};
 
-use ble_term::{
+use blessh_core::{
     logging,
     session::{Preamble, MAX_LEN},
 };

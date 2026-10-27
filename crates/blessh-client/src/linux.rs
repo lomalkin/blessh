@@ -5,8 +5,9 @@
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-use ble_term::{
-    bridge::{self, Outcome, PacketRx, PacketTx},
+use blessh_ble::bluez::{GattRx, GattTx};
+use blessh_core::{
+    bridge::{self, Outcome, PacketTx},
     link::Link,
     logging,
     protocol::{self, printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
@@ -55,14 +56,6 @@ struct Args {
     write_with_response: bool,
 }
 
-struct Rx(bluer::gatt::CharacteristicReader);
-
-impl PacketRx for Rx {
-    async fn recv(&mut self) -> std::io::Result<Vec<u8>> {
-        self.0.recv().await
-    }
-}
-
 /// Writes each frame with response through D-Bus.
 struct RequestTx(Characteristic);
 
@@ -80,7 +73,7 @@ impl PacketTx for RequestTx {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+pub async fn main() {
     logging::init("warn");
     let args = Args::parse();
     match run(args).await {
@@ -347,7 +340,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             notify.mtu()
         );
         let link = Link::new(frame(notify.mtu().saturating_sub(3)), args.window);
-        relay(link, Rx(notify), RequestTx(chars.rx)).await?
+        relay(link, GattRx(notify), RequestTx(chars.rx)).await?
     } else {
         let writer = chars.rx.write_io().await?;
         info!(
@@ -356,7 +349,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
             notify.mtu()
         );
         let link = Link::new(frame(writer.mtu()), args.window);
-        relay(link, Rx(notify), Arc::new(writer)).await?
+        relay(link, GattRx(notify), GattTx(Arc::new(writer))).await?
     };
     if !keep_link {
         let _ = dev.disconnect().await;
@@ -367,7 +360,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
 /// Runs the session over an open link; returns the exit code.
 async fn relay<T: PacketTx>(
     mut link: Link,
-    mut rx: Rx,
+    mut rx: GattRx,
     mut tx: T,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let initial = bridge::handshake(&mut link, &mut rx, &mut tx, Duration::from_secs(10)).await?;
