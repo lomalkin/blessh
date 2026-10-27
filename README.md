@@ -202,5 +202,10 @@ publishes a release with `SHA256SUMS` and the commit subjects since the
 previous tag. Untagged CI builds are versioned `X.Y.Z~ciN`, which sorts
 before the `X.Y.Z` release.
 
+Without CI, `ci/local/build.sh vX.Y.Z` runs the same checks and builds the
+same packages in docker on any Linux host, and writes the release notes
+next to them; publish with
+`gh release create vX.Y.Z <out>/*.deb <out>/SHA256SUMS --title "ble-term X.Y.Z" --notes-file <out>/notes.md`.
+
 `ble-term-loopback` runs both protocol ends over a simulated link (small MTU,
 packet reordering) and is what the end-to-end test uses.
