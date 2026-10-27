@@ -162,6 +162,13 @@ fn serve(
             break;
         }
     }
+    log::debug!(
+        "L2CAP channel closing: input {:?}, output {:?}, error {:?}, {} bytes not sent",
+        input.streamStatus(),
+        output.streamStatus(),
+        state.lock().unwrap().error,
+        state.lock().unwrap().outgoing.len()
+    );
     input.close();
     output.close();
     let mut s = state.lock().unwrap();

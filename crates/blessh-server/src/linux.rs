@@ -14,7 +14,7 @@ use blessh_ble::bluez::{self, GattRx, GattTx};
 use blessh_core::{
     bridge::{self, BridgeError, Outcome, PacketTx},
     link::Link,
-    logging,
+    logging, name,
     protocol::{
         self, printable, refusal_line, CloseReason, Frame, INFO_UUID, PSM_UUID, RX_UUID,
         SERVICE_UUID, TX_UUID,
@@ -52,9 +52,13 @@ struct Args {
     /// Bluetooth adapter to use (default: BlueZ default adapter).
     #[arg(long)]
     adapter: Option<String>,
-    /// Advertised name (default: host name).
+    /// Advertised name, by host name rules (default: the static host name
+    /// from /etc/hostname, which mDNS conflicts and DHCP do not change).
     #[arg(long)]
     name: Option<String>,
+    /// Print the name the server would advertise and exit.
+    #[arg(long)]
+    print_name: bool,
     /// Stream socket that starts a session for every connection.
     #[arg(long, default_value = "/run/blessh/session.sock")]
     session_socket: PathBuf,
@@ -192,16 +196,40 @@ impl Pending {
 pub async fn main() {
     logging::init("info");
     let args = Args::parse();
-    if let Err(e) = serve(args).await {
+    let name = match server_name(args.name.as_deref()) {
+        Ok(n) => n,
+        Err(e) => {
+            error!("{e}");
+            std::process::exit(2);
+        }
+    };
+    if args.print_name {
+        println!("{name}");
+        return;
+    }
+    if let Err(e) = serve(args, name).await {
         error!("{e}");
         std::process::exit(1);
     }
 }
 
-fn host_name() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_else(|_| "blessh".into())
+/// The name to advertise: `--name`, else the static host name, else the
+/// kernel's (possibly transient) one.
+fn server_name(given: Option<&str>) -> Result<String, String> {
+    if let Some(n) = given {
+        name::check(n).map_err(|e| format!("--name {n:?}: {e}"))?;
+        return Ok(n.to_owned());
+    }
+    ["/etc/hostname", "/proc/sys/kernel/hostname"]
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .find_map(|s| {
+            s.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+                .and_then(name::derive)
+        })
+        .ok_or_else(|| "no host name to advertise; set one with --name".into())
 }
 
 /// Why an adapter is off, with the command that fixes it.
@@ -304,11 +332,29 @@ async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<Advertisement
     adapter.advertise(adv).await
 }
 
-async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+/// How long the adapter's GATT and advertising interfaces may take to
+/// appear after the adapter is powered (they do a moment later when
+/// bluetoothd has just started).
+const INTERFACES_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn wait_interfaces(adapter: &Adapter) -> bluer::Result<()> {
+    let deadline = Instant::now() + INTERFACES_TIMEOUT;
+    loop {
+        match adapter.active_advertising_instances().await {
+            Ok(_) => return Ok(()),
+            Err(e) if Instant::now() < deadline => {
+                debug!("advertising interface not up yet: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error>> {
     let session = bluer::Session::new().await?;
     let adapter = wait_adapter(&session, args.adapter.as_deref()).await?;
     wait_powered(&adapter).await?;
-    let name = args.name.clone().unwrap_or_else(host_name);
     info!(
         "adapter {} ({}), advertising as {:?}",
         adapter.name(),
@@ -426,6 +472,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // BlueZ drops the registrations when the adapter goes away (unplugged,
     // reset by the USB stack) and does not restore them when it comes back.
     let adapter_events = session.events().await?;
+    wait_interfaces(&adapter).await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name).await?);
     info!(

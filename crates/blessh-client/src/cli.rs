@@ -212,8 +212,53 @@ pub fn exec_ssh(args: &[String]) -> std::io::Error {
         cmd.arg("-o")
             .arg(format!("HostKeyAlias={}", host_key_alias(&target)));
     }
+    // BLE is slow: compress unless told otherwise.
+    if !sets_option(args, "Compression") {
+        cmd.arg("-o").arg("Compression=yes");
+    }
+    // Log in as the current user unless the command line names one.
+    if !names_user(args, dest) {
+        if let Some(user) = current_user() {
+            cmd.arg("-o").arg(format!("User={user}"));
+        }
+    }
     cmd.args(&args[dest..]);
     cmd.exec()
+}
+
+/// Whether the arguments name the remote user: `user@host`, `-l user` or
+/// `-o User=...`.
+fn names_user(args: &[String], dest: usize) -> bool {
+    let d = args[dest].strip_prefix("ssh://").unwrap_or(&args[dest]);
+    if d.contains('@') || sets_option(args, "User") {
+        return true;
+    }
+    args[..dest].iter().enumerate().any(|(i, a)| {
+        a.strip_prefix('-').is_some_and(|flags| {
+            !a.starts_with("--")
+                && flags
+                    .chars()
+                    .take_while(|c| !SSH_OPTIONS_WITH_VALUE.contains(c) || *c == 'l')
+                    .any(|c| c == 'l')
+                && (flags.ends_with('l') && i + 1 < dest || !flags.ends_with('l'))
+        })
+    })
+}
+
+/// The login name of this process's user ($USER, else from the passwd
+/// database).
+fn current_user() -> Option<String> {
+    if let Some(u) = std::env::var_os("USER").filter(|u| !u.is_empty()) {
+        return Some(u.to_string_lossy().into_owned());
+    }
+    // SAFETY: getpwuid returns a pointer to static storage or null.
+    let pw = unsafe { libc::getpwuid(libc::getuid()) };
+    if pw.is_null() {
+        return None;
+    }
+    // SAFETY: pw_name is a valid C string while the struct is.
+    let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
+    Some(name.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -252,6 +297,19 @@ mod tests {
         assert_eq!(target_of("alice@AA:BB:CC:DD:EE:FF"), "AA:BB:CC:DD:EE:FF");
         assert_eq!(host_key_alias("my-pi"), "blessh-my-pi");
         assert_eq!(host_key_alias("AA:BB:CC:DD:EE:FF"), "blessh-aabbccddeeff");
+    }
+
+    #[test]
+    fn detects_a_named_user() {
+        assert!(names_user(&v(&["alice@pi"]), 0));
+        assert!(names_user(&v(&["ssh://alice@pi"]), 0));
+        assert!(names_user(&v(&["-l", "alice", "pi"]), 2));
+        assert!(names_user(&v(&["-vl", "alice", "pi"]), 2));
+        assert!(names_user(&v(&["-lalice", "pi"]), 1));
+        assert!(names_user(&v(&["-o", "User=alice", "pi"]), 2));
+        assert!(!names_user(&v(&["pi"]), 0));
+        assert!(!names_user(&v(&["-v", "pi", "ls", "-l"]), 1));
+        assert!(!names_user(&v(&["-p", "22", "pi"]), 2));
     }
 
     #[test]

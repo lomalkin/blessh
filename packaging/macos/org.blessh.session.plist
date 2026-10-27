@@ -2,8 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- LaunchDaemon: one sshd -i per connection to the session socket, like
      Apple's own ssh.plist. blessh-session logs the session's preamble
-     (id, device, transport), then execs sshd with the system
-     configuration included from /etc/blessh/sshd_config. -->
+     (id, device, transport), then runs sshd with the system
+     configuration included from /etc/blessh/sshd_config, over a loopback
+     TCP connection (macOS's sshd needs a client address for its audit
+     session). -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -11,6 +13,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/libexec/blessh/blessh-session</string>
+		<string>--loopback</string>
 		<string>--</string>
 		<string>/usr/sbin/sshd</string>
 		<string>-i</string>

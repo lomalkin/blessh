@@ -68,7 +68,8 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
 Settings go into `/etc/default/blessh` as `BLESSH_ARGS`: `--name` (the
-advertised name, default: the host name), `--adapter`, `--max-sessions`
+advertised name, default: the static host name from `/etc/hostname`, which
+neither DHCP nor avahi's renames on mDNS conflicts change), `--adapter`, `--max-sessions`
 (default 4; `MaxConnections` in `blessh-session.socket` must allow as
 many), `--no-l2cap` (serve the GATT stream only); `blessh-server --help`
 lists them all. Restart the service after a change.
@@ -144,7 +145,9 @@ blessh -p 22 -L 8080:localhost:80 alice@my-pi   # any ssh option or command
 `blessh` runs the system ssh with a ProxyCommand of `blessh proxy` and a
 HostKeyAlias (`blessh-<name>` or `blessh-<address>`), so the server's host
 key is pinned under that name in `~/.ssh/known_hosts`; compare the
-fingerprint on the first connection. One line before the session says which
+fingerprint on the first connection. It also turns on ssh compression
+(`-o Compression=no` turns it off) and, without `user@` or `-l`, logs in
+as the current user, like ssh does. One line before the session says which
 transport is in use: `blessh: my-pi AA:BB:CC:DD:EE:FF: l2cap, mtu 1024`, or
 `gatt, frame 497` with a server that offers no channel. `BLESSH_PROXY_ARGS`
 passes options to the proxy, for example `--adapter hci1` or `--gatt`;
@@ -157,7 +160,8 @@ Host my-pi
 ```
 
 Several sessions to one server share its BLE link; the last `blessh` to
-exit disconnects it.
+exit disconnects it. If no server has the name given, the error lists the
+names of the servers in range.
 
 The client machine needs no settings for the L2CAP channel. The GATT
 stream (servers run with `--no-l2cap`, or `--gatt`) needs EATT off on the
@@ -165,13 +169,15 @@ client as well (`Channels = 1` in the `[GATT]` section of
 `/etc/bluetooth/main.conf`, the default since BlueZ 5.67); `blessh` warns
 if it is on.
 
-If one of the two machines also publishes a GATT service that requires
-encryption, the other machine's bluetoothd may try to pair with it on its
-own; the connection then hangs or drops. Seen with PipeWire's WirePlumber,
-which publishes BLE MIDI, against BlueZ's MIDI plugin on the other side,
-whichever side is the server; phones are not affected. Turn off BLE MIDI in
-WirePlumber, or start the other machine's bluetoothd without the MIDI
-plugin (`-P midi`).
+The client makes the LE link itself and reads INFO over its own ATT
+channel, so the client machine's bluetoothd neither connects over BR/EDR
+(to a Mac, for example) nor discovers and probes the server's services.
+That matters when the server also publishes a GATT service that requires
+encryption, such as BLE MIDI from PipeWire's WirePlumber: bluetoothd's MIDI
+plugin would read it and ask to pair, and the link would drop. The GATT
+stream still goes through bluetoothd; for it, turn off BLE MIDI in
+WirePlumber on the server, or start the client's bluetoothd without the
+MIDI plugin (`-P midi`).
 
 ## macOS
 
@@ -179,21 +185,38 @@ The macOS build (`blessh-<version>-macos-arm64.tar.gz` on the Releases
 page) has the same client and a server on CoreBluetooth; both use the
 L2CAP channel (the GATT stream is not available on macOS yet, so the
 server needs clients with L2CAP: Linux, macOS, Android 10 and later, iOS).
-Unpack and run `sudo ./install.sh` from the account that should serve BLE
-sessions: the BLE server runs as that user through a LaunchAgent, because
+Unpack and run `sudo ./install.sh` (client and server), `sudo ./install.sh
+client` or `sudo ./install.sh server` from the account that should serve
+BLE sessions: the BLE server runs as that user through a LaunchAgent, because
 macOS grants Bluetooth to logged-in users only, and `sshd -i` runs as root
 through a LaunchDaemon with `inetdCompatibility`, like Apple's own ssh job.
 `/etc/blessh/sshd_config` includes the system `sshd_config`; Remote Login
 does not have to be on. Sessions are logged in `/tmp/blessh-server.log`
-and `/var/log/blessh-session.log`. `./uninstall.sh` removes it all.
+and `/var/log/blessh-session.log`. `sudo ./uninstall.sh [client|server]`
+removes them.
 
-The first use of Bluetooth from a terminal makes macOS ask for permission,
-attributed to the terminal app; until it is granted, `blessh` and
-`blessh-server` report "macOS has not decided whether this program may use
-Bluetooth". macOS shows no Bluetooth addresses: `blessh scan` lists
+The first use of Bluetooth makes macOS ask, on the Mac's screen, whether
+`blessh` (and, for the server, `blessh-server`) may use it. The permission
+belongs to blessh itself, not to the terminal or to sshd: `blessh` runs
+itself again as its own "responsible process", so it also works when
+started over SSH or from scripts once granted. Until it is granted,
+`blessh` and `blessh-server` report "macOS has not decided whether this
+program may use Bluetooth". macOS shows no Bluetooth addresses: `blessh scan` lists
 CoreBluetooth's device identifiers instead, and `blessh user@<name>`
 selects by advertised name. The server is only reachable while the user
 is logged in.
+
+The server advertises the computer's HostName if one is set, else its
+ComputerName (System Settings, General, About, Name), read at every start.
+The " (2)" that macOS appends to the ComputerName when another computer on
+the network has the same name is dropped, so such renames do not change the
+server's name; LocalHostName and the name DHCP hands out are not used.
+`/etc/blessh/name` or `--name` sets another name.
+
+Server names follow host name rules: letters, digits and hyphens, parts
+separated by dots, at most 29 bytes (what fits the advertisement), compared
+without regard to case. Defaults are derived accordingly: the first part of
+a host name, other characters replaced by hyphens.
 
 ## Security
 

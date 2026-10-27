@@ -15,8 +15,9 @@ use objc2::{
 };
 use objc2_core_bluetooth::CBManager;
 use objc2_core_bluetooth::{
-    CBAdvertisementDataLocalNameKey, CBCentralManager, CBCentralManagerDelegate, CBCharacteristic,
-    CBL2CAPChannel, CBManagerState, CBPeripheral, CBPeripheralDelegate, CBService,
+    CBAdvertisementDataLocalNameKey, CBCentralManager, CBCentralManagerDelegate,
+    CBCentralManagerScanOptionAllowDuplicatesKey, CBCharacteristic, CBL2CAPChannel, CBManagerState,
+    CBPeripheral, CBPeripheralDelegate, CBService,
 };
 use objc2_foundation::{
     NSArray, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString,
@@ -28,7 +29,8 @@ enum Event {
     State(CBManagerState),
     Discovered {
         peripheral: Shared<CBPeripheral>,
-        name: Option<String>,
+        local_name: Option<String>,
+        gap_name: Option<String>,
         rssi: i64,
     },
     Connected,
@@ -84,13 +86,14 @@ define_class!(
             // under the local name key.
             let local_name =
                 unsafe { advertisement_data.objectForKey(CBAdvertisementDataLocalNameKey) };
-            let name = local_name
-                .and_then(|v| v.downcast_ref::<NSString>().map(|s| s.to_string()))
-                // SAFETY: no preconditions.
-                .or_else(|| unsafe { peripheral.name() }.map(|n| n.to_string()));
+            let local_name =
+                local_name.and_then(|v| v.downcast_ref::<NSString>().map(|s| s.to_string()));
+            // SAFETY: no preconditions.
+            let gap_name = unsafe { peripheral.name() }.map(|n| n.to_string());
             self.send(Event::Discovered {
                 peripheral: Shared(peripheral.retain()),
-                name,
+                local_name,
+                gap_name,
                 rssi: rssi.integerValue() as i64,
             });
         }
@@ -193,8 +196,19 @@ pub struct Found {
     pub peripheral: Shared<CBPeripheral>,
     /// CoreBluetooth's identifier for the device (macOS shows no addresses).
     pub id: String,
-    pub name: Option<String>,
+    /// The name in the advertisement (scan response), once received.
+    pub local_name: Option<String>,
+    /// The device name CoreBluetooth has cached for the device, which may
+    /// be an older or another one than it advertises.
+    pub gap_name: Option<String>,
     pub rssi: i64,
+}
+
+impl Found {
+    /// The name to show: the advertised one, else the cached one.
+    pub fn name(&self) -> Option<&str> {
+        self.local_name.as_deref().or(self.gap_name.as_deref())
+    }
 }
 
 /// The client's CoreBluetooth central manager with a synchronous API: each
@@ -305,9 +319,17 @@ impl Central {
     ) -> io::Result<Option<Found>> {
         let uuids = NSArray::from_retained_slice(&[cb_uuid(&SERVICE_UUID)]);
         // SAFETY: no preconditions.
+        // Every advertisement, not only the first: the first may come
+        // before the scan response that carries the name.
+        // SAFETY: a CoreBluetooth constant.
+        let key = unsafe { CBCentralManagerScanOptionAllowDuplicatesKey };
+        let yes = NSNumber::new_bool(true);
+        let yes_obj: &AnyObject = &yes;
+        let options = NSDictionary::<NSString, AnyObject>::from_slices(&[key], &[yes_obj]);
+        // SAFETY: no preconditions.
         unsafe {
             self.manager
-                .scanForPeripheralsWithServices_options(Some(&uuids), None)
+                .scanForPeripheralsWithServices_options(Some(&uuids), Some(&options))
         };
         let deadline = Instant::now() + timeout;
         let result = loop {
@@ -318,7 +340,8 @@ impl Central {
             match self.events.recv_timeout(left) {
                 Ok(Event::Discovered {
                     peripheral,
-                    name,
+                    local_name,
+                    gap_name,
                     rssi,
                 }) => {
                     // SAFETY: no preconditions.
@@ -328,7 +351,8 @@ impl Central {
                     let f = Found {
                         peripheral,
                         id,
-                        name,
+                        local_name,
+                        gap_name,
                         rssi,
                     };
                     if found(&f) {

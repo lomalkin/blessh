@@ -6,7 +6,8 @@
 # not have to be on. Settings placed above the Include apply to BLE
 # sessions only, for example:
 #AllowGroups blessh
-# sshd sees no source address for BLE clients ("UNKNOWN"), so `Match
-# Address` blocks in the system configuration do not apply to them.
+# BLE sessions reach sshd over a loopback TCP connection, so sshd logs them
+# as coming from 127.0.0.1 and `Match Address 127.0.0.1` blocks in the
+# system configuration apply to them.
 
 Include /etc/ssh/sshd_config

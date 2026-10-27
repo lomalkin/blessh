@@ -9,6 +9,8 @@ mod cli;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod responsible;
 
 use clap::Parser;
 
@@ -35,6 +37,12 @@ mod platform {
 fn main() {
     blessh_core::logging::init("warn");
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "macos")]
+    if matches!(args.get(1).map(String::as_str), Some("scan" | "proxy")) {
+        if let Some(code) = responsible::respawn() {
+            std::process::exit(code);
+        }
+    }
     let code = match args.get(1).map(String::as_str) {
         Some("scan") | Some("proxy") => match cli::Cmd::parse() {
             cli::Cmd::Scan(a) => platform::scan(a),

@@ -4,6 +4,7 @@
 pub mod bridge;
 pub mod link;
 pub mod logging;
+pub mod name;
 pub mod protocol;
 pub mod relay;
 pub mod session;

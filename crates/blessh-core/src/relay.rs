@@ -65,6 +65,7 @@ where
         // After the local side ended, deliver what it wrote, then stop.
         if local_done && to_peer.is_empty() {
             let _ = pw.flush().await;
+            let _ = lw.flush().await;
             return Ok(outcome(End::Local, from_peer, sent));
         }
         tokio::select! {

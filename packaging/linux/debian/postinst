@@ -105,6 +105,11 @@ check_daemon() {
 # BLE sessions run sshd with the system SSH server's configuration
 # (/etc/blessh/sshd_config includes /etc/ssh/sshd_config).
 summary() {
+    BLESSH_ARGS=
+    [ ! -r /etc/default/blessh ] || . /etc/default/blessh
+    # shellcheck disable=SC2086
+    name=$(/usr/sbin/blessh-server $BLESSH_ARGS --print-name 2>&1 | tail -n 1)
+    printf '  %-8s  %s\n' Name "$name (static host name, or --name in /etc/default/blessh)"
     if [ -f "$KEY" ]; then
         fp=$(ssh-keygen -l -f "$KEY" | awk '{ print $2 }')
         printf '  %-8s  %s\n' "Host key" "$fp (same as network SSH)"

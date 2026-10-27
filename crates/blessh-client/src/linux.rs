@@ -1,13 +1,24 @@
-//! Linux client: BlueZ through bluer. Finds the server, connects, reads
-//! INFO and runs the session over an L2CAP channel, or over the GATT
-//! stream when the server offers no channel or `--gatt` asks for it.
+//! Linux client: bluetoothd (through bluer) scans for the server; the LE
+//! link is then made through the kernel by this process, which reads INFO
+//! over its own ATT channel and runs the session over an L2CAP channel.
+//! bluetoothd's GATT client is used only for the GATT stream (`--gatt`, or
+//! a server without an L2CAP channel) and for a device that is already
+//! connected through bluetoothd.
+//!
+//! The direct link matters: bluetoothd connects a dual-mode device such as
+//! a Mac over BR/EDR, and on any LE link it discovers the peer's services
+//! and probes them with its profiles, which on a server that exposes a
+//! service needing encryption (BLE MIDI from PipeWire) ends in a pairing
+//! request and a lost link. On a link whose ATT channel this process holds,
+//! bluetoothd does neither.
 
 use std::{collections::HashSet, error::Error, future::Future, sync::Arc, time::Duration};
 
-use blessh_ble::bluez::{self, GattRx, GattTx};
+use blessh_ble::bluez::{self, AttLink, GattRx, GattTx};
 use blessh_core::{
     bridge::{self, Outcome, PacketTx},
     link::Link,
+    name,
     protocol::{self, printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
     relay::{self, End},
 };
@@ -23,8 +34,22 @@ use log::{debug, info, warn};
 
 use crate::cli::{stop_signal, ProxyArgs, ScanArgs};
 
+/// How long making the LE link may take (the device must be advertising).
+const LINK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long one ATT request may take.
+const ATT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long opening the L2CAP channel may take, link setup included.
 const L2CAP_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long bluetoothd may take to discover the server's services.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long another blessh may take to learn the PSM of a server it is
+/// connecting to.
+const PSM_WAIT: Duration = Duration::from_secs(5);
+/// How long the scan matches names only before it asks servers whose
+/// name does not match for their INFO.
+const PROBE_AFTER: Duration = Duration::from_secs(4);
+/// How long `--keep-link` keeps the link up after the session.
+const KEEP_LINK: Duration = Duration::from_secs(5);
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -41,13 +66,17 @@ fn run(f: impl Future<Output = Result<i32>>) -> i32 {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    match rt.block_on(f) {
+    let code = match rt.block_on(f) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("blessh: {e}");
             1
         }
-    }
+    };
+    // A read of stdin may still be blocked in a runtime thread; waiting for
+    // it would keep the process alive after the session.
+    rt.shutdown_background();
+    code
 }
 
 async fn adapter(name: Option<&str>) -> Result<Adapter> {
@@ -64,7 +93,8 @@ async fn adapter(name: Option<&str>) -> Result<Adapter> {
 
 async fn scan_async(args: ScanArgs) -> Result<i32> {
     let adapter = adapter(args.adapter.as_deref()).await?;
-    find(&adapter, None, args.timeout, true).await?;
+    let local = adapter.address().await?;
+    find(&adapter, local, None, args.timeout, true).await?;
     Ok(0)
 }
 
@@ -84,32 +114,78 @@ impl PacketTx for RequestTx {
     }
 }
 
+/// A server the scan found.
+struct Found {
+    dev: Device,
+    /// The link and INFO when the server was identified by the name in its
+    /// INFO rather than by the name bluetoothd shows.
+    link: Option<(AttLink, String)>,
+}
+
+/// How many times making the LE link is tried: connection setup fails now
+/// and then over the air (HCI status 0x3e, which the kernel reports as
+/// ENOSYS) or times out.
+const LINK_ATTEMPTS: u32 = 3;
+
+/// Makes the LE link and reads INFO.
+async fn probe(local: Address, dev: &Device) -> Result<(AttLink, String)> {
+    let peer_type = dev.address_type().await?;
+    let mut attempt = 1;
+    let link = loop {
+        match AttLink::connect(local, dev.address(), peer_type, LINK_TIMEOUT).await {
+            Ok(l) => break l,
+            Err(e) if attempt < LINK_ATTEMPTS && e.raw_os_error() != Some(libc::EBUSY) => {
+                debug!("{}: link setup failed: {e}; retrying", dev.address());
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+    let info = link
+        .read_info(ATT_TIMEOUT)
+        .await
+        .map_err(|e| format!("cannot read the server's INFO: {e}"))?;
+    Ok((link, info))
+}
+
 /// Finds the server: by address or advertised name, or the first one seen
 /// when `target` is None. With `list`, prints every server instead.
+///
+/// bluetoothd may show a device under another name than the one it
+/// advertises (its GAP device name, read once over some connection), so a
+/// server whose name does not match is asked for its INFO.
 async fn find(
     adapter: &Adapter,
+    local: Address,
     target: Option<&str>,
     timeout: u64,
     list: bool,
-) -> bluer::Result<Option<Device>> {
+) -> Result<Option<Found>> {
     if let Some(addr) = target.and_then(|t| t.parse::<Address>().ok()) {
         if let Ok(dev) = adapter.device(addr) {
             if dev.is_connected().await.unwrap_or(false)
                 || dev.uuids().await.ok().flatten().is_some()
             {
-                return Ok(Some(dev));
+                return Ok(Some(Found { dev, link: None }));
             }
         }
     }
-    adapter
+    // Without the service UUID as a filter: with it, BlueZ may not record
+    // the name a server sends in its scan response. Devices are matched by
+    // their advertised UUIDs below.
+    if let Err(e) = adapter
         .set_discovery_filter(DiscoveryFilter {
-            uuids: [SERVICE_UUID].into_iter().collect(),
             transport: DiscoveryTransport::Le,
             ..Default::default()
         })
-        .await?;
-    let events = adapter.discover_devices().await?;
-    tokio::pin!(events);
+        .await
+    {
+        debug!("cannot set the discovery filter: {e}");
+    }
+    // bluetoothd may not answer StartDiscovery while another process
+    // connects to a device; the devices it knows are checked meanwhile.
+    let mut events = start_discovery(adapter).await?;
     let deadline = tokio::time::sleep(Duration::from_secs(timeout));
     tokio::pin!(deadline);
     // Advertised UUIDs and names can arrive after DeviceAdded, so devices
@@ -117,19 +193,40 @@ async fn find(
     // Devices BlueZ already knows produce no DeviceAdded event.
     let mut candidates: Vec<Address> = adapter.device_addresses().await?;
     let mut listed: HashSet<Address> = HashSet::new();
+    let mut probed: HashSet<Address> = HashSet::new();
+    // Servers in range with their names, for the error message.
+    let mut seen: Vec<(Address, String)> = Vec::new();
+    let probe_from = tokio::time::Instant::now() + PROBE_AFTER;
     let mut recheck = tokio::time::interval(Duration::from_millis(500));
     loop {
         tokio::select! {
-            _ = &mut deadline => return Ok(None),
-            ev = events.next() => {
+            _ = &mut deadline => {
+                if let (Some(t), false) = (target, list) {
+                    return Err(not_found(t, &seen).into());
+                }
+                return Ok(None);
+            }
+            ev = async { events.as_mut()?.next().await }, if events.is_some() => {
                 if let Some(AdapterEvent::DeviceAdded(addr)) = ev {
                     if !candidates.contains(&addr) {
                         candidates.push(addr);
                     }
                 }
             }
-            _ = recheck.tick() => {}
+            _ = recheck.tick() => {
+                if events.is_none() {
+                    events = start_discovery(adapter).await?;
+                }
+                for addr in adapter.device_addresses().await? {
+                    if !candidates.contains(&addr) {
+                        candidates.push(addr);
+                    }
+                }
+            }
         }
+        // Names first: a server is asked for its INFO only when none
+        // matches by name for a while.
+        let probing = tokio::time::Instant::now() >= probe_from;
         for addr in candidates.clone() {
             let dev = adapter.device(addr)?;
             let target_addr = target.is_some_and(|t| t.eq_ignore_ascii_case(&addr.to_string()));
@@ -140,10 +237,23 @@ async fn find(
                 .flatten()
                 .unwrap_or_default()
                 .contains(&SERVICE_UUID);
-            if !advertises && !target_addr {
+            let name = dev.name().await.ok().flatten().unwrap_or_default();
+            let alias = dev.alias().await.unwrap_or_default();
+            // bluetoothd forgets the UUIDs a device advertised when a link
+            // to it drops, until it hears it again, and a server may not
+            // advertise while connected: a device seen in this scan or
+            // connected whose name matches is a candidate all the same, and
+            // its INFO tells.
+            let named = !list
+                && target.is_some_and(|t| name::same(t, &name) || name::same(t, &alias))
+                && (dev.rssi().await.ok().flatten().is_some()
+                    || dev.is_connected().await.unwrap_or(false));
+            if !advertises && !target_addr && !named {
                 continue;
             }
-            let name = dev.name().await.ok().flatten().unwrap_or_default();
+            if !seen.iter().any(|(a, _)| *a == addr) {
+                seen.push((addr, name.clone()));
+            }
             if list {
                 if listed.insert(addr) {
                     println!(
@@ -154,11 +264,77 @@ async fn find(
                 continue;
             }
             match target {
-                None => return Ok(Some(dev)),
-                Some(t) if target_addr || t == name => return Ok(Some(dev)),
+                None => return Ok(Some(Found { dev, link: None })),
+                Some(t) if target_addr || name::same(t, &name) || name::same(t, &alias) => {
+                    return Ok(Some(Found { dev, link: None }))
+                }
+                Some(t) if probing && probed.insert(addr) => match probe(local, &dev).await {
+                    Ok((link, info))
+                        if protocol::info_value(&info, "name")
+                            .is_some_and(|n| name::same(n, t)) =>
+                    {
+                        return Ok(Some(Found {
+                            dev,
+                            link: Some((link, info)),
+                        }))
+                    }
+                    Ok((link, info)) => {
+                        release(&dev, link, !others_use(addr)).await;
+                        let real = protocol::info_value(&info, "name").unwrap_or_default();
+                        debug!("{addr} ({name:?}) is {real:?}, not {t:?}");
+                        if let Some((_, n)) = seen.iter_mut().find(|(a, _)| *a == addr) {
+                            *n = real.to_owned();
+                        }
+                    }
+                    Err(e) => debug!("{addr} ({name:?}): {e}"),
+                },
                 _ => {}
             }
         }
+    }
+}
+
+type Discovery = std::pin::Pin<Box<dyn futures::Stream<Item = AdapterEvent> + Send>>;
+
+/// How long bluetoothd may take to start discovery.
+const DISCOVERY_START_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Starts discovery; None if bluetoothd does not (yet), for example while
+/// another process connects to a device. The caller tries again later.
+async fn start_discovery(adapter: &Adapter) -> bluer::Result<Option<Discovery>> {
+    match tokio::time::timeout(DISCOVERY_START_TIMEOUT, adapter.discover_devices()).await {
+        Ok(Ok(events)) => Ok(Some(Box::pin(events))),
+        Ok(Err(e))
+            if matches!(
+                e.kind,
+                bluer::ErrorKind::InProgress | bluer::ErrorKind::NotReady
+            ) =>
+        {
+            debug!("bluetoothd did not start discovery: {e}");
+            Ok(None)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            debug!("bluetoothd did not start discovery in time");
+            Ok(None)
+        }
+    }
+}
+
+/// Why no server matched `target`, naming those that were in range.
+fn not_found(target: &str, seen: &[(Address, String)]) -> String {
+    let seen: Vec<&str> = seen
+        .iter()
+        .map(|(_, n)| n.as_str())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if seen.is_empty() {
+        format!("no blessh server named {target:?} found")
+    } else {
+        format!(
+            "no blessh server named {target:?} found; servers in range: {}",
+            seen.join(", ")
+        )
     }
 }
 
@@ -231,29 +407,36 @@ fn eatt_hint() -> Option<String> {
     old.then(|| format!("BlueZ {version} enables EATT by default"))
 }
 
-/// Keeps the blessh instances of one user that use the same device from
-/// stepping on each other's link: each holds a shared lock while connected
-/// (several sessions share one link), and the last one to leave takes the
-/// exclusive lock and disconnects. ssh does not wait for its ProxyCommand
-/// to exit, so a new session can start while the previous one leaves.
+/// What the blessh instances of one user share about a device: a lock,
+/// held shared while connected, so that the last one to leave can tell it
+/// is the last (and disconnect a link bluetoothd holds), and the server's
+/// PSM, for an instance that finds the ATT channel taken by another one and
+/// opens its channel over the same link.
 struct DeviceLock(Option<std::fs::File>);
 
 impl DeviceLock {
-    async fn shared(addr: Address) -> Self {
-        use std::os::fd::AsRawFd;
+    fn path(addr: Address) -> Option<std::path::PathBuf> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let name = format!("blessh-{}.lock", addr.to_string().replace(':', ""));
+        Some(dir.join(format!("blessh-{}.lock", addr.to_string().replace(':', ""))))
+    }
+
+    async fn shared(addr: Address) -> Self {
+        use std::os::fd::AsRawFd;
+        let Some(path) = Self::path(addr) else {
+            return Self(None);
+        };
         let file = match std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
+            .read(true)
             .write(true)
-            .open(dir.join(&name))
+            .open(&path)
         {
             Ok(f) => f,
             Err(e) => {
-                debug!("cannot open lock file {name}: {e}");
+                debug!("cannot open lock file {}: {e}", path.display());
                 return Self(None);
             }
         };
@@ -271,57 +454,316 @@ impl DeviceLock {
     }
 
     /// True when no other blessh uses the device any more.
+    /// Called on the way out only: a failed conversion to the exclusive
+    /// lock drops the shared one as well (flock(2)). The last one clears
+    /// the PSM, which is valid only while a link is up.
     fn last_user(&self) -> bool {
         use std::os::fd::AsRawFd;
         match &self.0 {
-            Some(f) => (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) == 0,
+            Some(f) => {
+                let last =
+                    (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) == 0;
+                if last {
+                    let _ = f.set_len(0);
+                }
+                last
+            }
             None => true,
+        }
+    }
+
+    /// Takes the shared lock again after `last_user`, if nobody holds the
+    /// exclusive one.
+    fn reshare(&self) {
+        use std::os::fd::AsRawFd;
+        if let Some(f) = &self.0 {
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+        }
+    }
+
+    /// The PSM another blessh that uses the device now has written.
+    fn psm(&self) -> Option<u16> {
+        protocol::info_psm(&self.read()?)
+    }
+
+    /// Whether another blessh is still making the link.
+    fn connecting(&self) -> bool {
+        let Some(s) = self.read() else {
+            return false;
+        };
+        let me = std::process::id() as i32;
+        s.lines()
+            .filter_map(|l| l.strip_prefix("connecting="))
+            .filter_map(|p| p.parse::<i32>().ok())
+            .any(|pid| pid != me && unsafe { libc::kill(pid, 0) } == 0)
+    }
+
+    fn read(&self) -> Option<String> {
+        use std::io::{Read, Seek};
+        let mut f = self.0.as_ref()?;
+        let mut s = String::new();
+        f.rewind().ok()?;
+        f.read_to_string(&mut s).ok()?;
+        Some(s.trim().to_owned())
+    }
+
+    fn write(&self, state: &str) {
+        use std::io::{Seek, Write};
+        if let Some(mut f) = self.0.as_ref() {
+            let _ = f.set_len(0);
+            let _ = f.rewind();
+            let _ = writeln!(f, "{state}");
+        }
+    }
+
+    fn set_psm(&self, psm: u16) {
+        self.write(&format!("psm={psm}"));
+    }
+
+    /// Notes that this process is about to make the link; the PSM replaces
+    /// the notes once known.
+    fn set_connecting(&self) {
+        use std::io::{Seek, SeekFrom, Write};
+        if let Some(mut f) = self.0.as_ref() {
+            if self.psm().is_none() && f.seek(SeekFrom::End(0)).is_ok() {
+                let _ = writeln!(f, "connecting={}", std::process::id());
+            }
         }
     }
 }
 
-async fn connect(dev: &Device) -> bluer::Result<()> {
-    if dev.is_connected().await? {
-        return Ok(());
-    }
-    let mut attempt = 0;
+/// Connects through bluetoothd, for the GATT stream.
+async fn connect_through_bluetoothd(dev: &Device) -> Result<()> {
+    // A link that is still going down (the previous client just left)
+    // looks connected, and then drops while bluetoothd discovers the
+    // services: connect once more in that case.
+    let mut again = true;
     loop {
-        match dev.connect().await {
-            Ok(()) => return Ok(()),
-            Err(e) if attempt < 2 => {
-                debug!("connect failed: {e}, retrying");
-                attempt += 1;
+        if !dev.is_connected().await? {
+            let mut attempt = 0;
+            loop {
+                match dev.connect().await {
+                    Ok(()) => break,
+                    Err(e) if attempt < 2 => {
+                        debug!("connect failed: {e}, retrying");
+                        attempt += 1;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
-            Err(e) => return Err(e),
         }
+        // Connect returns before bluetoothd has discovered the services.
+        let deadline = tokio::time::Instant::now() + RESOLVE_TIMEOUT;
+        loop {
+            if dev.is_services_resolved().await? {
+                return Ok(());
+            }
+            if !dev.is_connected().await? {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err("bluetoothd did not discover the server's services in time".into());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        if !again {
+            return Err(
+                "the link dropped while bluetoothd discovered the server's services; \
+                        it may have found a service that needs encryption and asked the \
+                        server to pair (README, \"Connect from Linux\")"
+                    .into(),
+            );
+        }
+        debug!("the link dropped during service discovery, connecting again");
+        again = false;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
 async fn proxy_async(args: ProxyArgs) -> Result<i32> {
     let adapter = adapter(args.adapter.as_deref()).await?;
-    let Some(dev) = find(&adapter, args.target.as_deref(), args.scan_timeout, false).await? else {
+    let local = adapter.address().await?;
+    let Some(found) = find(
+        &adapter,
+        local,
+        args.target.as_deref(),
+        args.scan_timeout,
+        false,
+    )
+    .await?
+    else {
         return Err("no blessh server found".into());
     };
+    let dev = found.dev.clone();
     let addr = dev.address();
-    let name = dev.name().await.ok().flatten().unwrap_or_default();
     let lock = DeviceLock::shared(addr).await;
     info!("connecting to {addr}");
-    let result = session(&adapter, &dev, &args, &name).await;
-    if !args.keep_link && lock.last_user() {
+    let result = session(local, found, &args, &lock).await;
+    if args.keep_link {
+        tokio::time::sleep(KEEP_LINK).await;
+    } else if lock.last_user() && dev.is_connected().await.unwrap_or(false) {
         let _ = dev.disconnect().await;
     }
     result
 }
 
-/// Connects and runs the session over the best transport the server offers.
-async fn session(adapter: &Adapter, dev: &Device, args: &ProxyArgs, name: &str) -> Result<i32> {
+/// Runs the session over the best transport the server offers.
+async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLock) -> Result<i32> {
+    let Found { dev, link } = found;
     let addr = dev.address();
-    connect(dev).await?;
+    let bluez_name = dev.name().await.ok().flatten().unwrap_or_default();
+    if args.gatt {
+        return bluetoothd_session(local, &dev, args, &bluez_name, None).await;
+    }
+    let (link, info, shared_psm) = match link {
+        Some((link, info)) => (Some(link), Some(info), None),
+        None => {
+            // EBUSY: this machine already has an ATT channel to the server.
+            // Another blessh made the link and shares its PSM (or is still
+            // making it), or a link that is going down still holds it, or
+            // bluetoothd does.
+            lock.set_connecting();
+            let start = tokio::time::Instant::now();
+            loop {
+                match probe(local, &dev).await {
+                    Ok((link, info)) => break (Some(link), Some(info), None),
+                    Err(e) if is_busy(e.as_ref()) => {}
+                    Err(e) => return Err(format!("{addr}: {e}").into()),
+                }
+                if let Some(p) = lock.psm() {
+                    debug!("{addr}: the link is shared, PSM {p} from another blessh");
+                    break (None, None, Some(p));
+                }
+                let waited = start.elapsed();
+                if waited > PSM_WAIT && !(lock.connecting() && waited < LINK_TIMEOUT + ATT_TIMEOUT)
+                {
+                    debug!("{addr}: bluetoothd holds the link");
+                    return bluetoothd_session(local, &dev, args, &bluez_name, None).await;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    };
+    let name = info
+        .as_deref()
+        .and_then(|i| protocol::info_value(i, "name"))
+        .map_or(bluez_name.clone(), str::to_owned);
+    if let Some(i) = &info {
+        info!("server info: {}", printable(i));
+    }
+    let psm = match &info {
+        Some(i) => protocol::info_psm(i),
+        None => shared_psm,
+    };
+    if let Some(psm) = psm {
+        lock.set_psm(psm);
+        let peer_type = dev.address_type().await?;
+        match bluez::l2cap_connect(
+            local,
+            addr,
+            peer_type,
+            psm,
+            args.l2cap_mtu,
+            L2CAP_CONNECT_TIMEOUT,
+        )
+        .await
+        {
+            Ok(stream) => {
+                let mtu = stream.as_ref().send_mtu().unwrap_or(0);
+                eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
+                // The link stays up and the server's bluetoothd keeps
+                // getting answers while the ATT channel is served.
+                let link = link.map(Arc::new);
+                let att = link.clone().map(|l| {
+                    tokio::spawn(async move {
+                        let e = l.serve().await;
+                        debug!("ATT channel ended: {e}");
+                    })
+                });
+                let code = relay_channel(stream).await;
+                if args.keep_link {
+                    tokio::time::sleep(KEEP_LINK).await;
+                }
+                if let Some(t) = att {
+                    t.abort();
+                    let _ = t.await;
+                }
+                if let Some(l) = link.and_then(Arc::into_inner) {
+                    release(&dev, l, !args.keep_link && lock.last_user()).await;
+                }
+                return code;
+            }
+            Err(e) => warn!("L2CAP channel on PSM {psm} failed: {e}; using the GATT stream"),
+        }
+    }
+    // The GATT stream needs bluetoothd's GATT client, so the link must be
+    // bluetoothd's: give this one up first.
+    if let Some(l) = link {
+        release(&dev, l, lock.last_user()).await;
+        lock.reshare();
+    }
+    for _ in 0..50 {
+        if !dev.is_connected().await? {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bluetoothd_session(local, &dev, args, &name, info).await
+}
+
+/// Closes a link this process made. With `disconnect`, the link is taken
+/// down before the ATT channel is closed: otherwise bluetoothd takes over
+/// the ATT channel of the link that is still up, starts discovering the
+/// server's services and, cut off by the disconnect, keeps the device as
+/// one without services, ignoring the service UUID it advertises until it
+/// restarts.
+async fn release(dev: &Device, link: AttLink, disconnect: bool) {
+    if disconnect {
+        let _ = tokio::time::timeout(Duration::from_secs(3), dev.disconnect()).await;
+        for _ in 0..30 {
+            if !dev.is_connected().await.unwrap_or(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    drop(link);
+}
+
+/// Whether another blessh of this user holds the device's lock.
+fn others_use(addr: Address) -> bool {
+    use std::os::fd::AsRawFd;
+    let Some(path) = DeviceLock::path(addr) else {
+        return false;
+    };
+    match std::fs::File::open(path) {
+        Ok(f) => (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) != 0,
+        Err(_) => false,
+    }
+}
+
+fn is_busy(e: &(dyn Error + 'static)) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|e| e.raw_os_error() == Some(libc::EBUSY))
+}
+
+/// A session over a link bluetoothd holds: the L2CAP channel if the
+/// server offers one, else the GATT stream.
+async fn bluetoothd_session(
+    local: Address,
+    dev: &Device,
+    args: &ProxyArgs,
+    name: &str,
+    info: Option<String>,
+) -> Result<i32> {
+    let addr = dev.address();
+    connect_through_bluetoothd(dev).await?;
     let Some(chars) = characteristics(dev).await? else {
         return Err("device does not provide the blessh service".into());
     };
-    let info = match &chars.info {
-        Some(c) => match c.read().await {
+    let info = match (info, &chars.info) {
+        (Some(i), _) => Some(i),
+        (None, Some(c)) => match c.read().await {
             Ok(v) => {
                 let v = String::from_utf8_lossy(&v).into_owned();
                 info!("server info: {}", printable(&v));
@@ -332,11 +774,10 @@ async fn session(adapter: &Adapter, dev: &Device, args: &ProxyArgs, name: &str) 
                 None
             }
         },
-        None => None,
+        (None, None) => None,
     };
     let psm = info.as_deref().and_then(protocol::info_psm);
     if let Some(psm) = psm.filter(|_| !args.gatt) {
-        let local = adapter.address().await?;
         let peer_type = dev.address_type().await?;
         match bluez::l2cap_connect(
             local,
@@ -402,6 +843,10 @@ async fn gatt_session(
 async fn relay_channel(stream: bluer::l2cap::Stream) -> Result<i32> {
     let stdio = bridge::stdio()?;
     let out = relay::run(stream, stdio, bluez::is_link_end, stop_signal()?).await?;
+    debug!(
+        "session ended: {:?}, {} bytes from the server, {} bytes to it",
+        out.end, out.from_peer, out.to_peer
+    );
     Ok(match out.end {
         End::Local | End::Cancelled | End::Peer(None) => 0,
         End::Peer(Some(e)) if e.raw_os_error() == Some(libc::ETIMEDOUT) => {

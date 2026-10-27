@@ -20,7 +20,7 @@ use blessh_ble::corebluetooth::{
     peripheral::{Peripheral, Session},
 };
 use blessh_core::{
-    logging,
+    logging, name,
     protocol::refusal_line,
     relay::{self, End},
     session::{self, Preamble},
@@ -36,9 +36,19 @@ use tokio::{
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "SSH over Bluetooth LE: CoreBluetooth server")]
 struct Args {
-    /// Advertised name (default: host name).
+    /// Advertised name, by host name rules (default: from --name-file,
+    /// else the computer's HostName or ComputerName, read at every start;
+    /// the " (2)" macOS appends to a ComputerName on a network conflict is
+    /// dropped, so such renames do not change it).
     #[arg(long)]
     name: Option<String>,
+    /// Optional file with the advertised name, to use another one than the
+    /// computer's.
+    #[arg(long, default_value = "/etc/blessh/name")]
+    name_file: PathBuf,
+    /// Print the name the server would advertise and exit.
+    #[arg(long)]
+    print_name: bool,
     /// Stream socket that starts a session for every connection (launchd).
     #[arg(long, default_value = "/var/run/blessh-session.sock")]
     session_socket: PathBuf,
@@ -60,14 +70,60 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 pub fn main() {
     logging::init("info");
     let args = Args::parse();
+    let name = match server_name(&args) {
+        Ok(n) => n,
+        Err(e) => {
+            error!("{e}");
+            std::process::exit(2);
+        }
+    };
+    if args.print_name {
+        println!("{name}");
+        return;
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    if let Err(e) = rt.block_on(serve(args)) {
+    if let Err(e) = rt.block_on(serve(args, name)) {
         error!("{e}");
         std::process::exit(1);
     }
+}
+
+/// The name to advertise: `--name`, else the name file, else one derived
+/// from the computer's names.
+fn server_name(args: &Args) -> Result<String, String> {
+    if let Some(n) = &args.name {
+        name::check(n).map_err(|e| format!("--name {n:?}: {e}"))?;
+        return Ok(n.clone());
+    }
+    match std::fs::read_to_string(&args.name_file) {
+        Ok(s) => {
+            let n = s.trim();
+            name::check(n).map_err(|e| format!("{}: {n:?}: {e}", args.name_file.display()))?;
+            return Ok(n.to_owned());
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", args.name_file.display())),
+    }
+    ["HostName", "ComputerName", "LocalHostName"]
+        .iter()
+        .filter_map(|k| scutil_get(k))
+        .chain(std::iter::once(host_name()))
+        .find_map(|n| name::derive(&n))
+        .ok_or_else(|| "no name to advertise; set one with --name".into())
+}
+
+fn scutil_get(key: &str) -> Option<String> {
+    let out = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", key])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 fn host_name() -> String {
@@ -82,8 +138,7 @@ fn host_name() -> String {
     name.split('.').next().unwrap_or("blessh").to_owned()
 }
 
-async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
-    let name = args.name.clone().unwrap_or_else(host_name);
+async fn serve(args: Args, name: String) -> Result<(), Box<dyn Error>> {
     match std::fs::read_to_string(&args.host_key) {
         Ok(k) => info!("SSH host key: {}", k.trim()),
         Err(e) => warn!("cannot read host key {}: {e}", args.host_key.display()),

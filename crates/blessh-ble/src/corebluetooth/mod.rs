@@ -56,8 +56,8 @@ pub(crate) fn not_powered_on() -> String {
     let auth = unsafe { objc2_core_bluetooth::CBManager::authorization_class() };
     if auth == objc2_core_bluetooth::CBManagerAuthorization::NotDetermined {
         "waiting for Bluetooth timed out: macOS has not decided whether this program may use \
-         Bluetooth; answer its prompt, or allow the terminal app under System Settings, \
-         Privacy & Security, Bluetooth"
+         Bluetooth; answer its prompt on the Mac's screen (it names blessh or blessh-server), \
+         or allow it under System Settings, Privacy & Security, Bluetooth"
             .into()
     } else {
         format!("waiting for Bluetooth timed out (authorization {auth:?})")
