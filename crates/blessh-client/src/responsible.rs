@@ -34,6 +34,22 @@ extern "C" fn forward(sig: libc::c_int) {
     }
 }
 
+/// In the child: exits when the parent is gone (killed, so it could not
+/// pass a signal on), instead of holding the link and the locks.
+fn watch_parent() {
+    // SAFETY: no preconditions.
+    let parent = unsafe { libc::getppid() };
+    let _ = std::thread::Builder::new()
+        .name("blessh-parent".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // SAFETY: no preconditions.
+            if unsafe { libc::getppid() } != parent {
+                std::process::exit(1);
+            }
+        });
+}
+
 fn cstring(s: &OsStr) -> Option<CString> {
     CString::new(s.as_bytes()).ok()
 }
@@ -43,6 +59,7 @@ fn cstring(s: &OsStr) -> Option<CString> {
 /// in which case the caller does the work itself).
 pub fn respawn() -> Option<i32> {
     if std::env::var_os(ENV).is_some() {
+        watch_parent();
         return None;
     }
     let exe = cstring(std::env::current_exe().ok()?.as_os_str())?;

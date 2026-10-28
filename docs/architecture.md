@@ -85,7 +85,7 @@ crates/blessh-server   blessh-server (daemon) and blessh-session (root helper)
 crates/blessh-client   blessh: ssh wrapper, scan, proxy
 packaging/linux        systemd units, sshd_config, D-Bus policy, sysusers,
                        maintainer scripts
-packaging/macos        Info.plist embedded in the binaries, launchd jobs,
+packaging/macos        Info-*.plist embedded in the binaries, launchd jobs,
                        install script
 web/                   web client (planned)
 ```
@@ -122,9 +122,9 @@ feature works unchanged.
 * One session per L2CAP channel; one at a time over the GATT stream.
 * `--max-sessions` (default 4) bounds all sessions together; the session
   socket's `MaxConnections` must allow as many. A channel opened beyond
-  the limit gets one line (`blessh: busy (4 sessions)`) before any SSH
-  banner and is closed; `ssh -v` shows the line. A GATT client beyond the
-  limit gets CLOSE 1.
+  the limit is refused in the channel handshake (`busy (4 sessions)`,
+  which the client prints) and closed. A GATT client beyond the limit gets
+  CLOSE 1.
 * The server does not end a link on its own while it carries a session.
   Ten seconds after the last channel of a link closes, the server
   disconnects it unless a new channel opened; controllers that cannot

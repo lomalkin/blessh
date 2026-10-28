@@ -32,35 +32,77 @@ INFO keys; clients ignore unknown keys:
 | `proto` | `1` |
 | `name` | the advertised name |
 | `mtu` | the ATT MTU of the bearer the read arrived on, for clients that cannot query it; read INFO after the MTU exchange |
-| `psm` | decimal PSM of the L2CAP channel; absent when the server offers none |
+| `psm` | decimal PSMs of the server's L2CAP channels, separated by `,`, in the order clients try them; absent when the server offers none |
+| `chan` | version of the channel handshake the server speaks (`1`); present with `psm`. Clients that do not know the version use the GATT stream |
 | `busy` | `1` while another device holds the GATT stream; absent otherwise. Concerns the GATT stream only |
+| `gatt` | `0` when the server does not serve the GATT stream (a macOS server); absent otherwise |
 
 The value can be longer than one ATT PDU; the server serves long reads
 (Read Blob) from the requested offset.
 
-The PSM characteristic carries the same PSM for iOS and macOS clients, which
-look for Apple's `CBUUIDL2CAPPSMCharacteristicString`.
+The PSM characteristic carries the first PSM for iOS and macOS clients,
+which look for Apple's `CBUUIDL2CAPPSMCharacteristicString`.
 
 ## L2CAP channel
 
-The server listens on an LE credit based connection-oriented channel with
-a dynamic PSM (0x80 to 0xFF, assigned at start-up) and security level low:
-the client connects without pairing or encryption. The server's receive
-MTU is 1024 bytes by default; the client's is its own choice.
+The server listens on LE credit based connection-oriented channels with
+dynamic PSMs (0x80 to 0xFF, assigned at start-up) and security level low:
+the client connects without pairing or encryption. A Linux server offers
+two channels that differ only in the server's receive MTU: 1024 bytes,
+then 64 bytes (`--l2cap-mtu`, `--l2cap-small-mtu`). The second one exists
+for pairs of Bluetooth stacks whose flow control stalls on large SDUs over
+links without LE Data Length Extension (seen between macOS and a Linux
+server whose controller has a 27-byte LE buffer); it is slow, so clients
+use it only when the first one fails the handshake. A macOS server cannot
+choose its MTU and offers one channel.
 
-A channel is one session. After the channel is connected, it carries the
-SSH connection in both directions, nothing else: the client's SSH library
-talks to `sshd -i` as it would over TCP. The server may send text lines
-before the SSH banner, as RFC 4253 allows; it does so only to refuse the
-session, with one line
+A channel is one session. It starts with the handshake below, then
+carries the SSH connection in both directions, nothing else: the client's
+SSH library talks to `sshd -i` as it would over TCP.
+
+### Channel handshake
+
+The client sends a hello right after the channel connects; the server
+answers with a reply and echoes the probe. All integers are little endian.
 
 ```
-blessh: <reason>\r\n
+hello  = "BLSH" version:u8 flags:u8 probe_len:u16 options_len:u16 options probe
+reply  = "BLSH" version:u8 status:u8 probe_len:u16 options_len:u16 options echo
+option = type:u8 len:u8 value
 ```
 
-followed by closing the channel. Reasons: `busy (N sessions)` when the
-server's session limit is reached, `session unavailable` when it cannot
-start sshd. OpenSSH shows such lines with `-v`.
+- `version`: the client sends the highest version it speaks (1); the
+  server answers with the lower of that and its own, and both use it. A
+  client aborts if the reply's version is higher than its own.
+- `flags`: none defined; senders set 0, receivers ignore them.
+- `status`: 0 accepted, 1 refused. A refused reply has `probe_len` 0 and
+  a reason option; the server then closes the channel. Reasons: `busy (N
+  sessions)` when the server's session limit is reached, `session
+  unavailable` when it cannot start sshd.
+- `options`: at most 1024 bytes. Defined: type 1, the reason (UTF-8),
+  in replies. Receivers ignore types they do not know, so later versions
+  can add options without breaking older peers.
+- `probe`: `probe_len` bytes (at most 8192) of any content; clients send
+  2048, about the size of an SSH key exchange init, the first large message
+  of a session. The server sends its reply as soon as it has read the
+  hello's header and options, then writes back every probe byte as it
+  arrives, before anything of the SSH session.
+
+The client checks that the echo matches. If the reply or the echo stops
+coming for 3 seconds (`--stall-timeout`), the channel counts as stalled:
+the client closes it and tries the server's next channel. A client that
+can choose its receive MTU (Linux) then tries each channel again with a
+receive MTU of 64, for the same stall in the other direction. Last comes
+the GATT stream, where the platform has one and the server serves it. A refusal ends the attempt: the limit
+applies to every channel. The server waits 10 seconds for a hello and
+closes channels that send something else.
+
+The handshake shows that the channel carries data both ways with the
+sizes SSH uses before SSH starts; without it, a stalled channel looks like
+a hung login. Its cost is one round trip and the probe, about 0.1 to 0.3
+seconds on a typical link.
+
+### Lifetime
 
 The session ends when either side closes the channel or the link goes
 down; the server then ends sshd's session (EOF, SIGHUP). A client may open

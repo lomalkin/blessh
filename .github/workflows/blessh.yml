@@ -154,15 +154,7 @@ jobs:
       - name: Unit tests
         run: cargo test
       - name: Tarball
-        run: |
-          ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          d=dist/blessh-$ver-macos-arm64
-          mkdir -p $d
-          cp target/release/blessh target/release/blessh-server target/release/blessh-session $d/
-          cp packaging/macos/install.sh packaging/macos/uninstall.sh packaging/macos/sshd_config \
-             packaging/macos/org.blessh.server.plist packaging/macos/org.blessh.session.plist $d/
-          cp README.md docs/protocol.md $d/
-          tar -C dist -czf $d.tar.gz blessh-$ver-macos-arm64
+        run: packaging/macos/build-tarball.sh
       - uses: actions/upload-artifact@v4
         with:
           name: blessh-macos-arm64

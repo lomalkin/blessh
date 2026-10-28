@@ -20,8 +20,7 @@ use blessh_ble::corebluetooth::{
     peripheral::{Peripheral, Session},
 };
 use blessh_core::{
-    logging, name,
-    protocol::refusal_line,
+    channel, logging, name,
     relay::{self, End},
     session::{self, Preamble},
 };
@@ -64,6 +63,8 @@ struct Args {
     host_key: PathBuf,
 }
 
+/// How long a client has for its channel hello.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long Bluetooth may take to come up and the service to register.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -233,15 +234,29 @@ async fn run_session(
     let id = session::new_id();
     let started = Instant::now();
     info!("{central}: session {id}: client connected (l2cap)");
+    let hello = match tokio::time::timeout(HELLO_TIMEOUT, channel::read_hello(&mut stream)).await {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => {
+            info!("{central}: session {id}: no blessh hello: {e}");
+            return;
+        }
+        Err(_) => {
+            info!("{central}: session {id}: no hello in time");
+            return;
+        }
+    };
     if count.fetch_add(1, Ordering::SeqCst) >= args.max_sessions {
         count.fetch_sub(1, Ordering::SeqCst);
         info!(
             "{central}: session {id}: refused, {} sessions in progress",
             args.max_sessions
         );
-        let _ = stream
-            .write_all(refusal_line(&format!("busy ({} sessions)", args.max_sessions)).as_bytes())
-            .await;
+        let _ = channel::refuse(
+            &mut stream,
+            &hello,
+            &format!("busy ({} sessions)", args.max_sessions),
+        )
+        .await;
         let _ = stream.shutdown().await;
         return;
     }
@@ -255,14 +270,17 @@ async fn run_session(
         Ok(l) => l,
         Err(e) => {
             error!("{central}: session {id}: cannot start session: {e}");
-            let _ = stream
-                .write_all(refusal_line("session unavailable").as_bytes())
-                .await;
+            let _ = channel::refuse(&mut stream, &hello, "session unavailable").await;
             let _ = stream.shutdown().await;
             count.fetch_sub(1, Ordering::SeqCst);
             return;
         }
     };
+    if let Err(e) = channel::accept(&mut stream, &hello).await {
+        info!("{central}: session {id}: channel handshake failed: {e}");
+        count.fetch_sub(1, Ordering::SeqCst);
+        return;
+    }
     info!("{central}: session {id}: SSH session started");
     let stopping = async {
         let _ = shutdown.wait_for(|s| *s).await;

@@ -14,9 +14,10 @@ this page lists what a change must not break, and how the protocol grows.
   characteristic starts requiring pairing or encryption.
 * **INFO:** `key=value` pairs separated by `;`; `proto=1` and `name` are
   always present; clients ignore unknown keys.
-* **L2CAP channel:** dynamic PSM named by INFO `psm` and the PSM
-  characteristic; security level low; raw SSH from the first byte, except
-  for refusal lines before the SSH banner; one session per channel.
+* **L2CAP channels:** dynamic PSMs listed by INFO `psm` in the order to
+  try them, the first also in the PSM characteristic; security level low;
+  the channel handshake of INFO `chan` (magic `BLSH`, version, status,
+  probe echo, options), then raw SSH; one session per channel.
 * **GATT stream (BleStream v1):** header (type u8, sequence u16 LE), the
   four frame types and their payloads, sequence numbering of every frame,
   reorder window of 64, frame size min(ATT_MTU − 3, 500), one frame per
@@ -35,17 +36,22 @@ this page lists what a change must not break, and how the protocol grows.
 ## How the protocol grows
 
 * **INFO keys** may be added; `proto` and `name` stay. Added so far: `mtu`
-  (ble-term 0.1.3), `busy` (0.2.3), `psm` (blessh 0.1.0).
+  (ble-term 0.1.3), `busy` (0.2.3), `psm` and `chan` (blessh 0.1).
+* **Channels** may be added to the `psm` list or reordered; clients try
+  them in order and must accept any number.
 * **Characteristics** may be added; existing UUIDs and properties stay.
-* **Refusal lines** on the channel may gain reasons; clients show them at
-  most and never parse them.
+* **Channel handshake:** options may be added (receivers ignore unknown
+  types) and refusal reasons may change (clients show them, never parse
+  them). A new handshake version is negotiated: the server answers with
+  the lower version, and a server keeps answering every version it ever
+  listed in `chan`. Flags stay 0 until a version defines them.
 * **HELLO flags** and **trailing bytes** of the GATT stream: both sides
   send 0 and ignore what they do not know; a new optional feature gets a
   flag bit and is used only when both HELLOs set it.
 * **New CLOSE reasons** may be added; receivers accept unknown reasons.
 * **Not extensible without a version bump:** new GATT frame types and a
-  different HELLO version (v1 receivers reject both), and the meaning of
-  the first bytes on a channel (raw SSH or a refusal line).
+  different HELLO version (v1 receivers reject both); on a channel, the
+  hello and reply headers of a handshake version.
 
 ## Not part of the contract
 

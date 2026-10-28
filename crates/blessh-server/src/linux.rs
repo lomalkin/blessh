@@ -13,11 +13,11 @@ use std::{
 use blessh_ble::bluez::{self, GattRx, GattTx};
 use blessh_core::{
     bridge::{self, BridgeError, Outcome, PacketTx},
+    channel,
     link::Link,
     logging, name,
     protocol::{
-        self, printable, refusal_line, CloseReason, Frame, INFO_UUID, PSM_UUID, RX_UUID,
-        SERVICE_UUID, TX_UUID,
+        self, printable, CloseReason, Frame, INFO_UUID, PSM_UUID, RX_UUID, SERVICE_UUID, TX_UUID,
     },
     relay::{self, End},
     session::{self, Preamble},
@@ -85,6 +85,15 @@ struct Args {
     /// Receive MTU of the L2CAP channel, in bytes.
     #[arg(long, default_value_t = 1024)]
     l2cap_mtu: u16,
+    /// Receive MTU of a second L2CAP channel that clients try when the first
+    /// one stalls (0: no second channel). Small SDUs avoid flow control
+    /// stalls between some stacks on controllers without LE Data Length
+    /// Extension.
+    #[arg(long, default_value_t = 64)]
+    l2cap_small_mtu: u16,
+    /// Seconds a client has for its channel hello.
+    #[arg(long, default_value_t = 10)]
+    hello_timeout: u64,
 }
 
 /// Sessions in progress over both transports, per client device.
@@ -369,23 +378,28 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     let sessions: Shared = Arc::default();
     // The L2CAP channel is the main transport; the GATT stream stays for
     // clients that cannot open one.
-    let listener = if args.no_l2cap {
-        None
-    } else {
-        match bluez::l2cap_listen(adapter.address().await?, args.l2cap_mtu, 4).await {
-            Ok(l) => Some(l),
-            Err(e) => {
-                warn!("cannot listen for L2CAP channels: {e}; serving the GATT stream only");
-                None
+    // Channels in the order clients try them.
+    let mut listeners: Vec<(StreamListener, u16, u16)> = Vec::new();
+    if !args.no_l2cap {
+        let mtus = [args.l2cap_mtu, args.l2cap_small_mtu];
+        for mtu in mtus.into_iter().filter(|m| *m > 0) {
+            match bluez::l2cap_listen(adapter.address().await?, mtu, 4).await {
+                Ok(l) => {
+                    let psm = l.as_ref().local_addr()?.psm;
+                    listeners.push((l, psm, mtu));
+                }
+                Err(e) => warn!("cannot listen for L2CAP channels with MTU {mtu}: {e}"),
             }
         }
-    };
-    let psm = match &listener {
-        Some(l) => Some(l.as_ref().local_addr()?.psm),
-        None => None,
-    };
+        if listeners.is_empty() {
+            warn!("no L2CAP channel; serving the GATT stream only");
+        }
+    }
+    let psms: Vec<u16> = listeners.iter().map(|(_, p, _)| *p).collect();
+    let psm = psms.first().copied();
 
     let info_name = name.clone();
+    let info_psms = psms.clone();
     // The device whose stream is open or being opened. INFO tells other
     // devices that the server is busy before they subscribe: BlueZ closes a
     // notification socket of another device when a subscribed device
@@ -402,13 +416,14 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                 read: true,
                 fun: Box::new(move |req| {
                     let holder = *info_holder.lock().unwrap();
-                    let (adapter, name) = (info_adapter.clone(), info_name.clone());
+                    let (adapter, name, psms) =
+                        (info_adapter.clone(), info_name.clone(), info_psms.clone());
                     async move {
                         let busy = match holder {
                             Some(h) if h != req.device_address => is_connected(&adapter, h).await,
                             _ => false,
                         };
-                        let v = protocol::info(&name, req.mtu, busy, psm).into_bytes();
+                        let v = protocol::info(&name, req.mtu, busy, &psms).into_bytes();
                         protocol::read_at(&v, req.offset)
                             .map(<[u8]>::to_vec)
                             .ok_or(ReqError::InvalidOffset)
@@ -475,23 +490,33 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     wait_interfaces(&adapter).await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name).await?);
+    let channels: Vec<String> = listeners
+        .iter()
+        .map(|(_, p, m)| format!("PSM 0x{p:02x} (MTU {m})"))
+        .collect();
     info!(
         "ready (BlueZ GATT application and advertisement registered{})",
-        psm.map(|p| format!(", L2CAP channel on PSM 0x{p:02x}"))
-            .unwrap_or_default()
+        if channels.is_empty() {
+            String::new()
+        } else {
+            format!(", L2CAP channels on {}", channels.join(", "))
+        }
     );
 
     // Tells the sessions that the daemon is stopping.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let accept_task = listener.map(|l| {
-        let (adapter, args, sessions, shutdown) = (
-            adapter.clone(),
-            args.clone(),
-            sessions.clone(),
-            shutdown_rx.clone(),
-        );
-        tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
-    });
+    let accept_tasks: Vec<_> = listeners
+        .into_iter()
+        .map(|(l, _, _)| {
+            let (adapter, args, sessions, shutdown) = (
+                adapter.clone(),
+                args.clone(),
+                sessions.clone(),
+                shutdown_rx.clone(),
+            );
+            tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
+        })
+        .collect();
     tokio::pin!(rx_control, tx_control, adapter_events);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
@@ -712,7 +737,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     }
 
     info!("shutting down");
-    if let Some(t) = &accept_task {
+    for t in &accept_tasks {
         t.abort();
     }
     let others = sessions.lock().unwrap().devices();
@@ -1024,10 +1049,10 @@ async fn accept_loop(
     }
 }
 
-/// Refuses a session on an L2CAP channel: one line before any SSH banner,
-/// then the channel closes.
-async fn refuse(mut stream: Stream, reason: &str) {
-    let _ = stream.write_all(refusal_line(reason).as_bytes()).await;
+/// Refuses a session on an L2CAP channel in the handshake reply, then
+/// closes the channel.
+async fn refuse(mut stream: Stream, hello: &channel::Header, reason: &str) {
+    let _ = channel::refuse(&mut stream, hello, reason).await;
     let _ = stream.shutdown().await;
 }
 
@@ -1036,13 +1061,29 @@ async fn refuse(mut stream: Stream, reason: &str) {
 /// session unit's journal.
 async fn run_l2cap_session(
     adapter: Adapter,
-    stream: Stream,
+    mut stream: Stream,
     peer: SocketAddr,
     args: Args,
     sessions: Shared,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let addr = peer.addr;
+    let hello = match tokio::time::timeout(
+        Duration::from_secs(args.hello_timeout),
+        channel::read_hello(&mut stream),
+    )
+    .await
+    {
+        Ok(Ok(h)) => h,
+        Ok(Err(e)) => {
+            info!("{addr}: dropping an L2CAP channel without a blessh hello: {e}");
+            return;
+        }
+        Err(_) => {
+            info!("{addr}: dropping an L2CAP channel: no hello in time");
+            return;
+        }
+    };
     let address_type = match peer.addr_type {
         AddressType::LePublic => "public",
         AddressType::LeRandom => "random",
@@ -1057,7 +1098,12 @@ async fn run_l2cap_session(
             "{addr}: session {id}: refused, {} sessions in progress",
             args.max_sessions
         );
-        refuse(stream, &format!("busy ({} sessions)", args.max_sessions)).await;
+        refuse(
+            stream,
+            &hello,
+            &format!("busy ({} sessions)", args.max_sessions),
+        )
+        .await;
         return;
     };
     let preamble = Preamble {
@@ -1079,11 +1125,15 @@ async fn run_l2cap_session(
                 "{addr}: session {id}: cannot start session via {}: {e}",
                 args.session_socket.display()
             );
-            refuse(stream, "session unavailable").await;
+            refuse(stream, &hello, "session unavailable").await;
             drop(counted);
             return;
         }
     };
+    if let Err(e) = channel::accept(&mut stream, &hello).await {
+        info!("{addr}: session {id}: channel handshake failed: {e}");
+        return;
+    }
     info!("{addr}: session {id}: SSH session started");
     let stopping = async {
         let _ = shutdown.wait_for(|s| *s).await;

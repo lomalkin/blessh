@@ -66,6 +66,14 @@ pub struct ProxyArgs {
     /// Receive MTU of the L2CAP channel, in bytes.
     #[arg(long, default_value_t = 1024)]
     pub l2cap_mtu: u16,
+    /// Bytes the server echoes at the start of a channel, to see that the
+    /// channel carries data both ways.
+    #[arg(long, default_value_t = blessh_core::channel::DEFAULT_PROBE, hide = true)]
+    pub probe: u16,
+    /// Seconds the echo may stop before the channel counts as stalled and
+    /// the next one is tried.
+    #[arg(long, default_value_t = 3)]
+    pub stall_timeout: u64,
     /// GATT stream: receive window granted to the server, in bytes.
     #[arg(long, default_value_t = 32768)]
     pub window: u32,

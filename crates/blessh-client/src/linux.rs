@@ -17,6 +17,7 @@ use std::{collections::HashSet, error::Error, future::Future, sync::Arc, time::D
 use blessh_ble::bluez::{self, AttLink, GattRx, GattTx};
 use blessh_core::{
     bridge::{self, Outcome, PacketTx},
+    channel,
     link::Link,
     name,
     protocol::{self, printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
@@ -481,9 +482,11 @@ impl DeviceLock {
         }
     }
 
-    /// The PSM another blessh that uses the device now has written.
-    fn psm(&self) -> Option<u16> {
-        protocol::info_psm(&self.read()?)
+    /// The channels another blessh that uses the device now has written.
+    fn psms(&self) -> Vec<u16> {
+        self.read()
+            .map(|s| protocol::info_psms(&s))
+            .unwrap_or_default()
     }
 
     /// Whether another blessh is still making the link.
@@ -516,8 +519,9 @@ impl DeviceLock {
         }
     }
 
-    fn set_psm(&self, psm: u16) {
-        self.write(&format!("psm={psm}"));
+    fn set_psms(&self, psms: &[u16]) {
+        let list: Vec<String> = psms.iter().map(u16::to_string).collect();
+        self.write(&format!("psm={};chan={}", list.join(","), channel::VERSION));
     }
 
     /// Notes that this process is about to make the link; the PSM replaces
@@ -525,7 +529,7 @@ impl DeviceLock {
     fn set_connecting(&self) {
         use std::io::{Seek, SeekFrom, Write};
         if let Some(mut f) = self.0.as_ref() {
-            if self.psm().is_none() && f.seek(SeekFrom::End(0)).is_ok() {
+            if self.psms().is_empty() && f.seek(SeekFrom::End(0)).is_ok() {
                 let _ = writeln!(f, "connecting={}", std::process::id());
             }
         }
@@ -615,8 +619,8 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
     if args.gatt {
         return bluetoothd_session(local, &dev, args, &bluez_name, None).await;
     }
-    let (link, info, shared_psm) = match link {
-        Some((link, info)) => (Some(link), Some(info), None),
+    let (link, info, shared_psms) = match link {
+        Some((link, info)) => (Some(link), Some(info), Vec::new()),
         None => {
             // EBUSY: this machine already has an ATT channel to the server.
             // Another blessh made the link and shares its PSM (or is still
@@ -626,13 +630,14 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
             let start = tokio::time::Instant::now();
             loop {
                 match probe(local, &dev).await {
-                    Ok((link, info)) => break (Some(link), Some(info), None),
+                    Ok((link, info)) => break (Some(link), Some(info), Vec::new()),
                     Err(e) if is_busy(e.as_ref()) => {}
                     Err(e) => return Err(format!("{addr}: {e}").into()),
                 }
-                if let Some(p) = lock.psm() {
-                    debug!("{addr}: the link is shared, PSM {p} from another blessh");
-                    break (None, None, Some(p));
+                let p = lock.psms();
+                if !p.is_empty() {
+                    debug!("{addr}: the link is shared, channels {p:?} from another blessh");
+                    break (None, None, p);
                 }
                 let waited = start.elapsed();
                 if waited > PSM_WAIT && !(lock.connecting() && waited < LINK_TIMEOUT + ATT_TIMEOUT)
@@ -651,24 +656,15 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
     if let Some(i) = &info {
         info!("server info: {}", printable(i));
     }
-    let psm = match &info {
-        Some(i) => protocol::info_psm(i),
-        None => shared_psm,
+    let psms = match &info {
+        Some(i) => protocol::info_psms(i),
+        None => shared_psms,
     };
-    if let Some(psm) = psm {
-        lock.set_psm(psm);
+    if !psms.is_empty() {
+        lock.set_psms(&psms);
         let peer_type = dev.address_type().await?;
-        match bluez::l2cap_connect(
-            local,
-            addr,
-            peer_type,
-            psm,
-            args.l2cap_mtu,
-            L2CAP_CONNECT_TIMEOUT,
-        )
-        .await
-        {
-            Ok(stream) => {
+        if let Some(stream) = open_channel(local, addr, peer_type, &psms, args).await? {
+            {
                 let mtu = stream.as_ref().send_mtu().unwrap_or(0);
                 eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
                 // The link stays up and the server's bluetoothd keeps
@@ -693,8 +689,13 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
                 }
                 return code;
             }
-            Err(e) => warn!("L2CAP channel on PSM {psm} failed: {e}; using the GATT stream"),
         }
+        if info.as_deref().is_some_and(|i| !protocol::info_gatt(i)) {
+            return Err(
+                "no L2CAP channel of the server works, and it serves no GATT stream".into(),
+            );
+        }
+        warn!("no L2CAP channel works; using the GATT stream");
     }
     // The GATT stream needs bluetoothd's GATT client, so the link must be
     // bluetoothd's: give this one up first.
@@ -776,26 +777,20 @@ async fn bluetoothd_session(
         },
         (None, None) => None,
     };
-    let psm = info.as_deref().and_then(protocol::info_psm);
-    if let Some(psm) = psm.filter(|_| !args.gatt) {
+    let psms = info.as_deref().map(protocol::info_psms).unwrap_or_default();
+    if !psms.is_empty() && !args.gatt {
         let peer_type = dev.address_type().await?;
-        match bluez::l2cap_connect(
-            local,
-            addr,
-            peer_type,
-            psm,
-            args.l2cap_mtu,
-            L2CAP_CONNECT_TIMEOUT,
-        )
-        .await
-        {
-            Ok(stream) => {
-                let mtu = stream.as_ref().send_mtu().unwrap_or(0);
-                eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
-                return relay_channel(stream).await;
-            }
-            Err(e) => warn!("L2CAP channel on PSM {psm} failed: {e}; using the GATT stream"),
+        if let Some(stream) = open_channel(local, addr, peer_type, &psms, args).await? {
+            let mtu = stream.as_ref().send_mtu().unwrap_or(0);
+            eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
+            return relay_channel(stream).await;
         }
+        if info.as_deref().is_some_and(|i| !protocol::info_gatt(i)) {
+            return Err(
+                "no L2CAP channel of the server works, and it serves no GATT stream".into(),
+            );
+        }
+        warn!("no L2CAP channel works; using the GATT stream");
     }
     gatt_session(&chars, info.as_deref(), args, name, addr).await
 }
@@ -837,6 +832,68 @@ async fn gatt_session(
         let link = Link::new(size, args.window);
         relay_gatt(link, GattRx(notify), GattTx(Arc::new(writer))).await
     }
+}
+
+/// Receive MTU of the client's last attempts on each channel: small SDUs
+/// from the server avoid the flow control stall some sending stacks
+/// (CoreBluetooth) run into towards receivers without LE Data Length
+/// Extension.
+const SMALL_MTU: u16 = 64;
+
+/// Opens the first channel that passes the handshake: each of the
+/// server's channels with the client's receive MTU, then each with a small
+/// one. None if none does; an error if the server refuses the session.
+async fn open_channel(
+    local: Address,
+    addr: Address,
+    peer_type: bluer::AddressType,
+    psms: &[u16],
+    args: &ProxyArgs,
+) -> Result<Option<bluer::l2cap::Stream>> {
+    let mut attempts: Vec<(u16, u16)> = psms.iter().map(|p| (*p, args.l2cap_mtu)).collect();
+    if args.l2cap_mtu > SMALL_MTU {
+        attempts.extend(psms.iter().map(|p| (*p, SMALL_MTU)));
+    }
+    let attempts = crate::cache::order(&addr.to_string(), attempts);
+    let total = attempts.len();
+    let _opening = crate::cache::OpenLock::take(&addr.to_string()).await;
+    for (i, (psm, mtu)) in attempts.into_iter().enumerate() {
+        let next = if i + 1 < total {
+            "trying the next channel"
+        } else {
+            "no channel left"
+        };
+        let mut stream =
+            match bluez::l2cap_connect(local, addr, peer_type, psm, mtu, L2CAP_CONNECT_TIMEOUT)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("L2CAP channel on PSM {psm} (MTU {mtu}): {e}; {next}");
+                    continue;
+                }
+            };
+        match channel::client(
+            &mut stream,
+            args.probe,
+            Duration::from_secs(args.stall_timeout),
+        )
+        .await
+        {
+            Ok(ok) => {
+                debug!(
+                    "channel on PSM {psm} (MTU {mtu}): handshake version {} in {} ms",
+                    ok.version,
+                    ok.elapsed.as_millis()
+                );
+                crate::cache::put(&addr.to_string(), psm, mtu);
+                return Ok(Some(stream));
+            }
+            Err(channel::ClientError::Refused(r)) => return Err(r.into()),
+            Err(e) => warn!("L2CAP channel on PSM {psm} (MTU {mtu}): {e}; {next}"),
+        }
+    }
+    Ok(None)
 }
 
 /// Relays stdin/stdout over the L2CAP channel; returns the exit code.

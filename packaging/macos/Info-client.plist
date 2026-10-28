@@ -7,9 +7,9 @@
 	<key>CFBundleName</key>
 	<string>blessh</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.1.3</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.0</string>
+	<string>0.1.3</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>blessh carries SSH sessions over Bluetooth Low Energy.</string>
 </dict>

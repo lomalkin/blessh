@@ -55,7 +55,7 @@ fi
 D=$!
 trap 'kill $D $SA 2>/dev/null || true' EXIT
 sleep 3
-grep -q "L2CAP channel on PSM" "$T/daemon.log" || { echo "FAIL: no L2CAP channel"; cat "$T/daemon.log"; exit 1; }
+grep -q "L2CAP channels on PSM" "$T/daemon.log" || { echo "FAIL: no L2CAP channel"; cat "$T/daemon.log"; exit 1; }
 
 # Successive clients share the one LE link: let the previous blessh finish
 # (the last one disconnects on exit) before starting the next.

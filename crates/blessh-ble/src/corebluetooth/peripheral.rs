@@ -112,7 +112,13 @@ define_class!(
                 // SAFETY: no preconditions.
                 let mtu =
                     unsafe { request.central().maximumUpdateValueLength() }.min(65532) as u16 + 3;
-                protocol::info(&self.ivars().name, mtu, false, psm).into_bytes()
+                let psms: Vec<u16> = psm.into_iter().collect();
+                // No GATT stream on macOS yet.
+                format!(
+                    "{};gatt=0",
+                    protocol::info(&self.ivars().name, mtu, false, &psms)
+                )
+                .into_bytes()
             } else if uuid == PSM_UUID.to_string() {
                 psm.unwrap_or(0).to_le_bytes().to_vec()
             } else {

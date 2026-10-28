@@ -4,6 +4,8 @@
 //! a ProxyCommand of `blessh proxy`, which relays the session over BLE;
 //! `blessh scan` lists servers in range. See `cli::USAGE`.
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cache;
 mod cli;
 #[cfg(target_os = "linux")]
 mod linux;

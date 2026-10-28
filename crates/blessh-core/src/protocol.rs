@@ -15,11 +15,6 @@ pub const TX_UUID: Uuid = Uuid::from_u128(0x5b1e7e03_6d2c_4f4a_9a3e_2c1b0e8f4a10
 /// clients look for; INFO carries the same value as `psm`.
 pub const PSM_UUID: Uuid = Uuid::from_u128(0xabdd3056_28fa_441d_a470_55a75a52553a);
 
-/// Prefix of the line a server sends on an L2CAP channel, before any SSH
-/// banner, when it refuses the session (busy, session unavailable). RFC 4253
-/// lets servers send such lines; ssh shows them with -v.
-pub const REFUSAL_PREFIX: &str = "blessh: ";
-
 pub const VERSION: u8 = 1;
 pub const MAGIC: [u8; 4] = *b"BLTM";
 
@@ -288,12 +283,18 @@ mod printable_tests {
 
 /// Value of the INFO characteristic. `mtu` is the ATT MTU of the bearer the
 /// read arrived on, for clients that cannot query it; `busy` says that
-/// another device holds the GATT stream; `psm` is the server's L2CAP
-/// channel, if it has one.
-pub fn info(name: &str, mtu: u16, busy: bool, psm: Option<u16>) -> String {
+/// another device holds the GATT stream; `psms` are the server's L2CAP
+/// channels in the order clients try them, with the channel handshake
+/// version.
+pub fn info(name: &str, mtu: u16, busy: bool, psms: &[u16]) -> String {
     let busy = if busy { ";busy=1" } else { "" };
-    let psm = psm.map(|p| format!(";psm={p}")).unwrap_or_default();
-    format!("proto={VERSION};name={name};mtu={mtu}{busy}{psm}")
+    let chan = if psms.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = psms.iter().map(u16::to_string).collect();
+        format!(";psm={};chan={}", list.join(","), crate::channel::VERSION)
+    };
+    format!("proto={VERSION};name={name};mtu={mtu}{busy}{chan}")
 }
 
 /// Value of a key in an INFO value.
@@ -309,14 +310,28 @@ pub fn info_busy(info: &str) -> bool {
     info_value(info, "busy") == Some("1")
 }
 
-/// The server's L2CAP PSM from an INFO value, if it offers a channel.
-pub fn info_psm(info: &str) -> Option<u16> {
-    info_value(info, "psm")?.parse().ok().filter(|p| *p > 0)
+/// Whether the server serves the GATT stream: all do unless INFO says
+/// `gatt=0` (a macOS server, for now).
+pub fn info_gatt(info: &str) -> bool {
+    info_value(info, "gatt") != Some("0")
 }
 
-/// The line that refuses a session on an L2CAP channel.
-pub fn refusal_line(reason: &str) -> String {
-    format!("{REFUSAL_PREFIX}{reason}\r\n")
+/// The server's L2CAP channels from an INFO value, in the order to try
+/// them; empty if it offers none or speaks no channel handshake version
+/// this client knows.
+pub fn info_psms(info: &str) -> Vec<u16> {
+    if info_value(info, "chan")
+        .and_then(|v| v.parse::<u8>().ok())
+        .map_or(true, |v| v == 0)
+    {
+        return Vec::new();
+    }
+    info_value(info, "psm")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|p| p.parse().ok())
+        .filter(|p| *p > 0)
+        .collect()
 }
 
 /// The part of an attribute value a read at `offset` returns (ATT Read Blob
@@ -328,15 +343,15 @@ pub fn read_at(value: &[u8], offset: u16) -> Option<&[u8]> {
 
 #[cfg(test)]
 mod info_tests {
-    use super::{info, info_busy, info_psm, read_at};
+    use super::{info, info_busy, info_psms, read_at};
 
     #[test]
     fn info_value() {
-        assert_eq!(info("pi", 517, false, None), "proto=1;name=pi;mtu=517");
-        assert_eq!(info("pi", 23, true, None), "proto=1;name=pi;mtu=23;busy=1");
+        assert_eq!(info("pi", 517, false, &[]), "proto=1;name=pi;mtu=517");
+        assert_eq!(info("pi", 23, true, &[]), "proto=1;name=pi;mtu=23;busy=1");
         assert_eq!(
-            info("pi", 23, false, Some(0x81)),
-            "proto=1;name=pi;mtu=23;psm=129"
+            info("pi", 23, false, &[0x81, 0x83]),
+            "proto=1;name=pi;mtu=23;psm=129,131;chan=1"
         );
     }
 
@@ -348,20 +363,26 @@ mod info_tests {
     }
 
     #[test]
-    fn info_psm_value() {
-        assert_eq!(info_psm("proto=1;name=pi;mtu=23;psm=129"), Some(129));
-        assert_eq!(info_psm("proto=1;name=pi;mtu=23"), None);
-        assert_eq!(info_psm("proto=1;name=pi;mtu=23;psm=0"), None);
-        assert_eq!(info_psm("proto=1;name=pi;mtu=23;psm=x"), None);
+    fn info_gatt_flag() {
+        assert!(super::info_gatt("proto=1;name=pi"));
+        assert!(!super::info_gatt("proto=1;name=mac;gatt=0"));
+    }
+
+    #[test]
+    fn info_psm_values() {
         assert_eq!(
-            super::refusal_line("busy (4 sessions)"),
-            "blessh: busy (4 sessions)\r\n"
+            info_psms("proto=1;name=pi;psm=129,131;chan=1"),
+            vec![129, 131]
         );
+        assert_eq!(info_psms("proto=1;name=pi;psm=129;chan=2"), vec![129]);
+        assert_eq!(info_psms("proto=1;name=pi;psm=129"), Vec::<u16>::new());
+        assert_eq!(info_psms("proto=1;name=pi;mtu=23"), Vec::<u16>::new());
+        assert_eq!(info_psms("proto=1;psm=0,x,133;chan=1"), vec![133]);
     }
 
     #[test]
     fn long_reads_continue_at_offset() {
-        let v = info("a-rather-long-host-name", 23, false, None).into_bytes();
+        let v = info("a-rather-long-host-name", 23, false, &[]).into_bytes();
         let mut got = Vec::new();
         while let Some(part) = read_at(&v, got.len() as u16).filter(|p| !p.is_empty()) {
             got.extend_from_slice(&part[..part.len().min(22)]);

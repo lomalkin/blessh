@@ -95,7 +95,7 @@ head -c "$SIZE" /dev/urandom > "$T/blob"
 want=$(sha < "$T/blob")
 remote=/tmp/blessh-bench.$$
 t0=$(now)
-got=$(run "cat > $remote; $RSHA < $remote" < "$T/blob")
+got=$(run "cat > $remote; cat $remote | $RSHA" < "$T/blob")
 t1=$(now)
 [ "$got" = "$want" ]
 check "upload $SIZE bytes ($(rate "$SIZE" "$t0" "$t1"))" $?

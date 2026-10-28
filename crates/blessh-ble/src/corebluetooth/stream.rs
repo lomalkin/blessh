@@ -71,6 +71,7 @@ impl L2capStream {
         let (input, output) = (Shared(input), Shared(output));
         let state = Arc::new(Mutex::new(Inner::default()));
         let thread_state = state.clone();
+        enlist(&peer_of(&channel));
         std::thread::Builder::new()
             .name("blessh-l2cap".into())
             .spawn(move || serve(channel, input, output, thread_state))?;
@@ -92,11 +93,12 @@ fn stream_error(stream: &NSStream) -> String {
 }
 
 fn serve(
-    _channel: Shared<CBL2CAPChannel>,
+    channel: Shared<CBL2CAPChannel>,
     input: Shared<NSInputStream>,
     output: Shared<NSOutputStream>,
     state: Arc<Mutex<Inner>>,
 ) {
+    let peer = peer_of(&channel);
     let run_loop = NSRunLoop::currentRunLoop();
     // SAFETY: a Foundation constant.
     let mode = unsafe { NSDefaultRunLoopMode };
@@ -174,6 +176,48 @@ fn serve(
     let mut s = state.lock().unwrap();
     s.peer_closed = true;
     s.wake_all();
+    drop(s);
+    retire(&peer, channel);
+}
+
+/// Channels per peer: how many are open, and the closed ones still held.
+/// CoreBluetooth tears down every channel to a device when one channel
+/// object of that device is released, so closed channels are released only
+/// together with the last open one.
+type PeerChannels = (String, usize, Vec<Shared<CBL2CAPChannel>>);
+static CHANNELS: Mutex<Vec<PeerChannels>> = Mutex::new(Vec::new());
+
+fn peer_of(channel: &CBL2CAPChannel) -> String {
+    // SAFETY: no preconditions.
+    unsafe { channel.peer() }
+        .map(|p| unsafe { p.identifier().UUIDString() }.to_string())
+        .unwrap_or_default()
+}
+
+fn enlist(peer: &str) {
+    let mut c = CHANNELS.lock().unwrap();
+    match c.iter_mut().find(|(p, _, _)| p == peer) {
+        Some(e) => e.1 += 1,
+        None => c.push((peer.to_owned(), 1, Vec::new())),
+    }
+}
+
+fn retire(peer: &str, channel: Shared<CBL2CAPChannel>) {
+    let released = {
+        let mut c = CHANNELS.lock().unwrap();
+        let Some(i) = c.iter().position(|(p, _, _)| p == peer) else {
+            return;
+        };
+        c[i].1 -= 1;
+        c[i].2.push(channel);
+        if c[i].1 == 0 {
+            Some(c.remove(i).2)
+        } else {
+            None
+        }
+    };
+    // Released outside the lock.
+    drop(released);
 }
 
 impl AsyncRead for L2capStream {

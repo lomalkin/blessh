@@ -46,6 +46,19 @@ rework (2026-10).
 
 ## Server and protocol
 
+* Root cause of the channel stall between CoreBluetooth and Linux on
+  controllers without LE Data Length Extension (Pi Zero 2 W, 27-byte LE
+  buffer, MPS 23): CoreBluetooth sends 19-byte K-frames and stops in the
+  middle of an SDU while Linux still counts credits for it; Linux returns
+  credits only when its count reaches zero, because with MPS 23
+  `l2cap_publish_rx_avail` always falls back to "one SDU" (the sk_buff
+  overhead estimate exceeds the buffer). Seen in both directions; the
+  channel handshake detects it and the second channel (server MTU 64) or
+  a client MTU of 64 avoid it, at about 1 KB/s. Worth a kernel report with
+  traces, and a look at whether CoreBluetooth or Linux breaks the spec.
+* A faster fallback than MTU 64 for such links (MTU 128 worked 2 of 3
+  times); the right value may depend on the sender's K-frame size.
+
 * Verify on real radios what btvirt cannot: two client devices at the
   same time (advertising while connected), phones, CoreBluetooth against
   BlueZ, and the Bookworm residual risk (a phone that answers bluetoothd's
