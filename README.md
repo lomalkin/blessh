@@ -161,7 +161,10 @@ Host my-pi
 
 Several sessions to one server share its BLE link; the last `blessh` to
 exit disconnects it. If no server has the name given, the error lists the
-names of the servers in range.
+names of the servers in range. A server can offer several L2CAP channels;
+`blessh` checks each with a short handshake before SSH starts, falls back
+to the next one (and to the GATT stream) when a channel stalls, and
+remembers in `~/.cache/blessh/` which one worked for each server.
 
 The client machine needs no settings for the L2CAP channel. The GATT
 stream (servers run with `--no-l2cap`, or `--gatt`) needs EATT off on the
@@ -212,6 +215,11 @@ The " (2)" that macOS appends to the ComputerName when another computer on
 the network has the same name is dropped, so such renames do not change the
 server's name; LocalHostName and the name DHCP hands out are not used.
 `/etc/blessh/name` or `--name` sets another name.
+
+The macOS client also remembers which device had each server name
+(`~/.cache/blessh/devices`): if a short scan does not find the name, it
+connects to that device directly, since a server may not advertise right
+after a previous session's link went down.
 
 Server names follow host name rules: letters, digits and hyphens, parts
 separated by dots, at most 29 bytes (what fits the advertisement), compared

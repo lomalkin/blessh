@@ -100,6 +100,10 @@ struct Args {
 #[derive(Default)]
 struct Sessions {
     per_device: HashMap<Address, usize>,
+    /// L2CAP channels open per device, sessions or not (yet).
+    channels: HashMap<Address, usize>,
+    /// When the last channel of a device closed.
+    last_close: HashMap<Address, Instant>,
 }
 
 type Shared = Arc<Mutex<Sessions>>;
@@ -115,6 +119,68 @@ impl Sessions {
 
     fn devices(&self) -> Vec<Address> {
         self.per_device.keys().copied().collect()
+    }
+}
+
+/// Counts an L2CAP channel from accept to close. When the last channel of
+/// a device closes, the link goes down after a grace period unless another
+/// channel opened meanwhile: the client may open the next one right away,
+/// and controllers that do not advertise while connected become visible
+/// again.
+struct ChannelGuard {
+    sessions: Shared,
+    addr: Address,
+    adapter: Adapter,
+    shutdown: watch::Receiver<bool>,
+}
+
+impl ChannelGuard {
+    fn new(
+        sessions: &Shared,
+        addr: Address,
+        adapter: &Adapter,
+        shutdown: &watch::Receiver<bool>,
+    ) -> Self {
+        *sessions.lock().unwrap().channels.entry(addr).or_default() += 1;
+        Self {
+            sessions: sessions.clone(),
+            addr,
+            adapter: adapter.clone(),
+            shutdown: shutdown.clone(),
+        }
+    }
+}
+
+impl Drop for ChannelGuard {
+    fn drop(&mut self) {
+        let addr = self.addr;
+        let idle = {
+            let mut s = self.sessions.lock().unwrap();
+            let n = s.channels.entry(addr).or_default();
+            *n = n.saturating_sub(1);
+            let idle = *n == 0;
+            if idle {
+                s.channels.remove(&addr);
+            }
+            s.last_close.insert(addr, Instant::now());
+            idle
+        };
+        if !idle || *self.shutdown.borrow() {
+            return;
+        }
+        let (sessions, adapter) = (self.sessions.clone(), self.adapter.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(LINK_GRACE).await;
+            let s = sessions.lock().unwrap();
+            let quiet = s
+                .last_close
+                .get(&addr)
+                .is_some_and(|t| t.elapsed() >= LINK_GRACE);
+            if quiet && !s.channels.contains_key(&addr) && !s.has(addr) {
+                drop(s);
+                disconnect(&adapter, addr);
+            }
+        });
     }
 }
 
@@ -1031,15 +1097,12 @@ async fn accept_loop(
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                let (adapter, args, sessions, shutdown) = (
-                    adapter.clone(),
-                    args.clone(),
-                    sessions.clone(),
-                    shutdown.clone(),
-                );
-                tokio::spawn(run_l2cap_session(
-                    adapter, stream, peer, args, sessions, shutdown,
-                ));
+                let guard = ChannelGuard::new(&sessions, peer.addr, &adapter, &shutdown);
+                let (args, sessions, shutdown) = (args.clone(), sessions.clone(), shutdown.clone());
+                tokio::spawn(async move {
+                    run_l2cap_session(stream, peer, args, sessions, shutdown).await;
+                    drop(guard);
+                });
             }
             Err(e) => {
                 error!("accepting an L2CAP channel failed: {e}");
@@ -1060,7 +1123,6 @@ async fn refuse(mut stream: Stream, hello: &channel::Header, reason: &str) {
 /// the session socket. Logged like a GATT session, with the same id in the
 /// session unit's journal.
 async fn run_l2cap_session(
-    adapter: Adapter,
     mut stream: Stream,
     peer: SocketAddr,
     args: Args,
@@ -1159,16 +1221,4 @@ async fn run_l2cap_session(
         started.elapsed().as_secs()
     );
     drop(counted);
-    // The client may open another channel right away; otherwise the link
-    // goes down after a grace period, which also frees controllers that do
-    // not advertise while connected.
-    if !*shutdown.borrow() && !sessions.lock().unwrap().has(addr) {
-        let (adapter, sessions) = (adapter.clone(), sessions.clone());
-        tokio::spawn(async move {
-            tokio::time::sleep(LINK_GRACE).await;
-            if !sessions.lock().unwrap().has(addr) {
-                disconnect(&adapter, addr);
-            }
-        });
-    }
 }

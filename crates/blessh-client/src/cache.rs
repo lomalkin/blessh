@@ -47,6 +47,47 @@ pub fn put(server: &str, psm: u16, mtu: u16) {
     }
 }
 
+/// The device identifier a server name had last time (macOS identifies
+/// devices by CoreBluetooth identifiers).
+#[cfg(target_os = "macos")]
+pub fn device_of(name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path()?.with_file_name("devices")).ok()?;
+    text.lines().find_map(|l| {
+        let (n, id) = l.split_once(' ')?;
+        blessh_core::name::same(n, name).then(|| id.to_owned())
+    })
+}
+
+/// Remembers the device identifier of a server name.
+#[cfg(target_os = "macos")]
+pub fn put_device(name: &str, id: &str) {
+    let Some(p) = path().map(|p| p.with_file_name("devices")) else {
+        return;
+    };
+    if device_of(name).as_deref() == Some(id) {
+        return;
+    }
+    let old = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut lines: Vec<String> = old
+        .lines()
+        .filter(|l| {
+            l.split(' ')
+                .next()
+                .is_some_and(|n| !blessh_core::name::same(n, name))
+        })
+        .map(str::to_owned)
+        .collect();
+    lines.push(format!("{name} {id}"));
+    let keep = lines.len().saturating_sub(256);
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, lines[keep..].join("\n") + "\n").is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
+    }
+}
+
 /// `attempts` with the one that worked last time for `server` first.
 pub fn order(server: &str, mut attempts: Vec<(u16, u16)>) -> Vec<(u16, u16)> {
     if let Some(last) = get(server) {

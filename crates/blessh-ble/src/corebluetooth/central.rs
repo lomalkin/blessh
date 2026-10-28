@@ -17,10 +17,10 @@ use objc2_core_bluetooth::CBManager;
 use objc2_core_bluetooth::{
     CBAdvertisementDataLocalNameKey, CBCentralManager, CBCentralManagerDelegate,
     CBCentralManagerScanOptionAllowDuplicatesKey, CBCharacteristic, CBL2CAPChannel, CBManagerState,
-    CBPeripheral, CBPeripheralDelegate, CBService,
+    CBPeripheral, CBPeripheralDelegate, CBPeripheralState, CBService,
 };
 use objc2_foundation::{
-    NSArray, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString,
+    NSArray, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString, NSUUID,
 };
 
 use super::{cb_uuid, error_text, stream::L2capStream, uuid_of, Shared};
@@ -33,9 +33,11 @@ enum Event {
         gap_name: Option<String>,
         rssi: i64,
     },
-    Connected,
-    ConnectFailed(String),
-    Disconnected(Option<String>),
+    /// Link events name the peripheral: the central may also see other
+    /// peripherals it looked at come and go.
+    Connected(String),
+    ConnectFailed(String, String),
+    Disconnected(String, Option<String>),
     Services(Result<(), String>),
     Characteristics(Result<(), String>),
     Value {
@@ -99,28 +101,34 @@ define_class!(
         }
 
         #[unsafe(method(centralManager:didConnectPeripheral:))]
-        fn did_connect(&self, _central: &CBCentralManager, _peripheral: &CBPeripheral) {
-            self.send(Event::Connected);
+        fn did_connect(&self, _central: &CBCentralManager, peripheral: &CBPeripheral) {
+            self.send(Event::Connected(peripheral_id(peripheral)));
         }
 
         #[unsafe(method(centralManager:didFailToConnectPeripheral:error:))]
         fn did_fail_to_connect(
             &self,
             _central: &CBCentralManager,
-            _peripheral: &CBPeripheral,
+            peripheral: &CBPeripheral,
             error: Option<&NSError>,
         ) {
-            self.send(Event::ConnectFailed(error_text(error)));
+            self.send(Event::ConnectFailed(
+                peripheral_id(peripheral),
+                error_text(error),
+            ));
         }
 
         #[unsafe(method(centralManager:didDisconnectPeripheral:error:))]
         fn did_disconnect(
             &self,
             _central: &CBCentralManager,
-            _peripheral: &CBPeripheral,
+            peripheral: &CBPeripheral,
             error: Option<&NSError>,
         ) {
-            self.send(Event::Disconnected(error.map(|e| error_text(Some(e)))));
+            self.send(Event::Disconnected(
+                peripheral_id(peripheral),
+                error.map(|e| error_text(Some(e))),
+            ));
         }
     }
 
@@ -218,6 +226,23 @@ pub struct Central {
     delegate: Shared<Delegate>,
     events: mpsc::Receiver<Event>,
     _queue: DispatchRetained<DispatchQueue>,
+    /// The peripheral the last connect was for.
+    current: Mutex<String>,
+}
+
+/// Whether the peripheral is connected, a moment after an event that
+/// suggested otherwise.
+fn still_connected(p: &CBPeripheral) -> bool {
+    std::thread::sleep(Duration::from_millis(300));
+    // SAFETY: no preconditions.
+    (unsafe { p.state() }) == CBPeripheralState::Connected
+}
+
+fn peripheral_id(p: &CBPeripheral) -> String {
+    // SAFETY: no preconditions.
+    unsafe { p.identifier().UUIDString() }
+        .to_string()
+        .to_lowercase()
 }
 
 fn timeout_error(what: &str) -> io::Error {
@@ -243,6 +268,7 @@ impl Central {
             delegate: Shared(delegate),
             events: rx,
             _queue: queue,
+            current: Mutex::new(String::new()),
         };
         // SAFETY: no preconditions.
         log::debug!("Bluetooth authorization: {:?}", unsafe {
@@ -289,7 +315,7 @@ impl Central {
                 Ok(Event::State(s)) if s != CBManagerState::PoweredOn => {
                     return Err(io::Error::other("Bluetooth went away"))
                 }
-                Ok(Event::Disconnected(e)) => {
+                Ok(Event::Disconnected(id, e)) if id == *self.current.lock().unwrap() => {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionReset,
                         format!(
@@ -309,6 +335,48 @@ impl Central {
                 }
             }
         }
+    }
+
+    /// blessh servers this Mac is connected to already (by any process):
+    /// such a server may not advertise while the link is up.
+    pub fn connected(&self) -> Vec<Found> {
+        let uuids = NSArray::from_retained_slice(&[cb_uuid(&SERVICE_UUID)]);
+        // SAFETY: no preconditions.
+        let list = unsafe {
+            self.manager
+                .retrieveConnectedPeripheralsWithServices(&uuids)
+        };
+        list.iter()
+            .map(|p| Found {
+                // SAFETY: no preconditions.
+                id: unsafe { p.identifier().UUIDString() }
+                    .to_string()
+                    .to_lowercase(),
+                // SAFETY: no preconditions.
+                gap_name: unsafe { p.name() }.map(|n| n.to_string()),
+                local_name: None,
+                rssi: 0,
+                peripheral: Shared(p),
+            })
+            .collect()
+    }
+
+    /// A peripheral this Mac has seen before, by CoreBluetooth identifier:
+    /// it can be connected without scanning.
+    pub fn known(&self, id: &str) -> Option<Found> {
+        let uuid = NSUUID::from_string(&NSString::from_str(id))?;
+        let ids = NSArray::from_retained_slice(&[uuid]);
+        // SAFETY: no preconditions.
+        let list = unsafe { self.manager.retrievePeripheralsWithIdentifiers(&ids) };
+        let p = list.iter().next()?;
+        Some(Found {
+            id: peripheral_id(&p),
+            // SAFETY: no preconditions.
+            gap_name: unsafe { p.name() }.map(|n| n.to_string()),
+            local_name: None,
+            rssi: 0,
+            peripheral: Shared(p),
+        })
     }
 
     /// Scans for servers until `found` accepts one or the timeout passes.
@@ -377,13 +445,17 @@ impl Central {
     pub fn connect(&self, peripheral: &Shared<CBPeripheral>, timeout: Duration) -> io::Result<()> {
         // SAFETY: the delegate outlives the peripheral's use (both live in
         // this struct or the caller's Found).
+        let id = peripheral_id(peripheral);
+        *self.current.lock().unwrap() = id.clone();
         unsafe {
             peripheral.setDelegate(Some(ProtocolObject::from_ref(&*self.delegate.0)));
             self.manager.connectPeripheral_options(peripheral, None);
         }
         self.wait("connecting", timeout, |ev| match ev {
-            Event::Connected => Some(Ok(())),
-            Event::ConnectFailed(e) => Some(Err(io::Error::other(format!("connect failed: {e}")))),
+            Event::Connected(c) if c == id => Some(Ok(())),
+            Event::ConnectFailed(c, e) if c == id => {
+                Some(Err(io::Error::other(format!("connect failed: {e}"))))
+            }
             _ => None,
         })
     }
@@ -454,6 +526,46 @@ impl Central {
             Event::Channel(r) => Some(r.map_err(io::Error::other)),
             _ => None,
         })
+    }
+
+    /// Waits until the link to the connected peripheral goes down (Some,
+    /// with the reason) or `stop` is set (None). An open channel does not
+    /// always report a lost link on its streams.
+    pub fn wait_disconnected(
+        &self,
+        peripheral: &Shared<CBPeripheral>,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Option<String> {
+        loop {
+            match self.events.recv_timeout(Duration::from_millis(200)) {
+                // A disconnect another process asked for may be reported
+                // while the link is up again for this one, and the manager
+                // passes through other states for a moment: what counts is
+                // whether the peripheral is still connected.
+                Ok(Event::Disconnected(id, e)) if id == *self.current.lock().unwrap() => {
+                    if still_connected(peripheral) {
+                        log::debug!("ignoring a disconnect report: the link is up");
+                        continue;
+                    }
+                    return Some(e.unwrap_or_else(|| "disconnected".into()));
+                }
+                Ok(Event::State(s)) if s != CBManagerState::PoweredOn => {
+                    if still_connected(peripheral) {
+                        log::debug!("ignoring Bluetooth state {s:?}: the link is up");
+                        continue;
+                    }
+                    return Some(format!("Bluetooth state {s:?}"));
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Some("Bluetooth manager gone".into())
+                }
+            }
+            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+        }
     }
 
     pub fn disconnect(&self, peripheral: &Shared<CBPeripheral>) {

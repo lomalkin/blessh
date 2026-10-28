@@ -35,6 +35,7 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 | Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani -p blessh-core` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
 | Fuzzing, up to an hour per target | `cargo +nightly fuzz run --fuzz-dir tests/fuzz <target>`; overnight runs only when asked for |
+| Bench: connecting and disconnecting, where most failures happen: many short sessions back to back and in overlapping pairs, logs of failed sessions kept | `tests/e2e-cycles.sh -n 10 -m all <name>` on the client node (Linux or macOS; `-t` bounds one session, 40 s by default) |
 | Bench: client and server over the radio (installed packages on two bench nodes), both directions | `tests/e2e-bench.sh -s 1 <name>` (smoke, under a minute), `-s 2` (basics, a few minutes), `-s 3` (1 MB each way, 20 sessions in a row, link loss; about 10 minutes) on the client node; run the stages in this order |
 | Bench: two client devices at the same time, phones, the macOS client and server against Linux and each other | by hand; not covered by btvirt (see architecture.md, "Verified so far"); the macOS binaries were built and started but could not reach Bluetooth without the permission prompt being answered |
 | Bench: install and upgrade | S1, S13 and the other cases below that need no phone |

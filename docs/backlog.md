@@ -56,6 +56,10 @@ rework (2026-10).
   channel handshake detects it and the second channel (server MTU 64) or
   a client MTU of 64 avoid it, at about 1 KB/s. Worth a kernel report with
   traces, and a look at whether CoreBluetooth or Linux breaks the spec.
+* macOS client and a Pi Zero 2 W server: now and then CoreBluetooth
+  reports the manager as powered off for a moment (often as another
+  blessh process exits) and drops the peripheral, which ends the session
+  (1 to 2 in 20 short sessions); not seen with other servers.
 * A faster fallback than MTU 64 for such links (MTU 128 worked 2 of 3
   times); the right value may depend on the sender's K-frame size.
 

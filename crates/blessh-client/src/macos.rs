@@ -2,7 +2,16 @@
 //! advertised name or by CoreBluetooth's device identifier (macOS shows no
 //! Bluetooth addresses); sessions run over the L2CAP channel.
 
-use std::{collections::HashSet, error::Error, io, time::Duration};
+use std::{
+    collections::HashSet,
+    error::Error,
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use blessh_ble::corebluetooth::{
     self,
@@ -87,13 +96,104 @@ pub fn proxy(args: ProxyArgs) -> i32 {
     code
 }
 
-/// Finds the server, connects and opens the channel. CoreBluetooth calls
-/// block, so this runs off the async runtime.
+/// Connects to a server and reads its INFO.
+fn read_info(central: &Central, found: &Found) -> io::Result<String> {
+    central.connect(&found.peripheral, STEP_TIMEOUT)?;
+    let chars = central.discover(&found.peripheral, STEP_TIMEOUT)?;
+    let info_char = chars
+        .iter()
+        .find(|(uuid, _)| *uuid == INFO_UUID.to_string())
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| io::Error::other("device does not provide the blessh service"))?;
+    Ok(
+        String::from_utf8_lossy(&central.read(&found.peripheral, &info_char, STEP_TIMEOUT)?)
+            .into_owned(),
+    )
+}
+
+/// A server this Mac is connected to already, which may not advertise
+/// while the link is up: selected by identifier or by the name in its INFO.
+fn connected_server(central: &Central, target: Option<&str>) -> Option<(Found, String)> {
+    for f in central.connected() {
+        let by_id = target.map_or(true, |t| f.id.eq_ignore_ascii_case(t));
+        match read_info(central, &f) {
+            Ok(info)
+                if by_id
+                    || protocol::info_value(&info, "name")
+                        .is_some_and(|n| target.is_some_and(|t| name::same(n, t))) =>
+            {
+                return Some((f, info));
+            }
+            Ok(_) => {}
+            Err(e) => log::debug!("connected device {}: {e}", f.id),
+        }
+    }
+    None
+}
+
+/// How long the scan looks for a server by name before the client tries
+/// the device it had under that name last time.
+const QUICK_SCAN: Duration = Duration::from_secs(5);
+
+/// A server found by a short scan or, failing that, the device that had
+/// its name last time, connected without waiting for its advertisement (a
+/// server may not advertise right after a link went down).
+fn known_server(
+    central: &Central,
+    target: Option<&str>,
+    scan_timeout: Duration,
+) -> Option<(Found, String)> {
+    let t = target?;
+    let id = crate::cache::device_of(t)?;
+    if let Ok(found) = scan_for(central, Some(t), QUICK_SCAN.min(scan_timeout)) {
+        return read_info(central, &found).ok().map(|info| (found, info));
+    }
+    let found = central.known(&id)?;
+    match read_info(central, &found) {
+        Ok(info) if protocol::info_value(&info, "name").is_some_and(|n| name::same(n, t)) => {
+            log::debug!("{t}: connected to the known device {id}");
+            Some((found, info))
+        }
+        Ok(_) => None,
+        Err(e) => {
+            log::debug!("{t}: known device {id}: {e}");
+            None
+        }
+    }
+}
+
+/// Finds the server, connects and reads INFO. CoreBluetooth calls block,
+/// so this runs off the async runtime.
 fn open(target: Option<String>, scan_timeout: Duration) -> io::Result<(Central, Found, Vec<u16>)> {
     let central = Central::new(BLUETOOTH_TIMEOUT)?;
+    let (found, info) = match connected_server(&central, target.as_deref()) {
+        Some(c) => c,
+        None => match known_server(&central, target.as_deref(), scan_timeout) {
+            Some(k) => k,
+            None => {
+                let found = scan_for(&central, target.as_deref(), scan_timeout)?;
+                let info = read_info(&central, &found)?;
+                (found, info)
+            }
+        },
+    };
+    if let Some(n) = protocol::info_value(&info, "name") {
+        crate::cache::put_device(n, &found.id);
+    }
+    info!("server info: {}", printable(&info));
+    let psms = protocol::info_psms(&info);
+    if psms.is_empty() {
+        return Err(io::Error::other(
+            "the server offers no L2CAP channel; the GATT stream is not available on macOS yet",
+        ));
+    }
+    Ok((central, found, psms))
+}
+
+fn scan_for(central: &Central, target: Option<&str>, scan_timeout: Duration) -> io::Result<Found> {
     // Servers in range by identifier, with the best name known so far.
     let mut seen: Vec<(String, String)> = Vec::new();
-    let found = central
+    central
         .scan(scan_timeout, |f| {
             let n = f.name().unwrap_or_default().to_owned();
             match seen.iter_mut().find(|(id, _)| *id == f.id) {
@@ -102,7 +202,7 @@ fn open(target: Option<String>, scan_timeout: Duration) -> io::Result<(Central, 
                 None => seen.push((f.id.clone(), n)),
             }
             // Only the advertised name counts: the cached one may be stale.
-            match &target {
+            match target {
                 None => true,
                 Some(t) => {
                     f.id.eq_ignore_ascii_case(t)
@@ -111,7 +211,7 @@ fn open(target: Option<String>, scan_timeout: Duration) -> io::Result<(Central, 
             }
         })?
         .ok_or_else(|| {
-            let what = match &target {
+            let what = match target {
                 Some(t) => format!("no blessh server named {t:?} found"),
                 None => "no blessh server found".into(),
             };
@@ -125,25 +225,7 @@ fn open(target: Option<String>, scan_timeout: Duration) -> io::Result<(Central, 
             } else {
                 io::Error::other(format!("{what}; servers in range: {}", names.join(", ")))
             }
-        })?;
-    central.connect(&found.peripheral, STEP_TIMEOUT)?;
-    let chars = central.discover(&found.peripheral, STEP_TIMEOUT)?;
-    let info_char = chars
-        .iter()
-        .find(|(uuid, _)| *uuid == INFO_UUID.to_string())
-        .map(|(_, c)| c.clone())
-        .ok_or_else(|| io::Error::other("device does not provide the blessh service"))?;
-    let info =
-        String::from_utf8_lossy(&central.read(&found.peripheral, &info_char, STEP_TIMEOUT)?)
-            .into_owned();
-    info!("server info: {}", printable(&info));
-    let psms = protocol::info_psms(&info);
-    if psms.is_empty() {
-        return Err(io::Error::other(
-            "the server offers no L2CAP channel; the GATT stream is not available on macOS yet",
-        ));
-    }
-    Ok((central, found, psms))
+        })
 }
 
 /// Opens the first of the server's channels that passes the handshake.
@@ -217,7 +299,29 @@ async fn proxy_async(args: ProxyArgs) -> Result<i32> {
         found.id
     );
     let stdio = bridge::stdio()?;
-    let outcome = relay::run(stream, stdio, corebluetooth::is_link_end, stop_signal()?).await;
+    // The link going down ends the session even when the channel's streams
+    // do not report it.
+    let stop = Arc::new(AtomicBool::new(false));
+    let watch_stop = stop.clone();
+    let watched = found.peripheral.clone();
+    let watcher = tokio::task::spawn_blocking(move || {
+        let lost = central.wait_disconnected(&watched, &watch_stop);
+        (central, lost)
+    });
+    tokio::pin!(watcher);
+    let relay = relay::run(stream, stdio, corebluetooth::is_link_end, stop_signal()?);
+    let (outcome, central) = tokio::select! {
+        outcome = relay => {
+            stop.store(true, Ordering::SeqCst);
+            let (central, _) = (&mut watcher).await?;
+            (outcome, central)
+        }
+        watched = &mut watcher => {
+            let (_, lost) = watched?;
+            warn!("link lost: {}", lost.unwrap_or_default());
+            return Ok(3);
+        }
+    };
     if !args.keep_link {
         central.disconnect(&found.peripheral);
     }
