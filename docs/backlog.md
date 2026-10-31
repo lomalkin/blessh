@@ -86,6 +86,4 @@ rework (2026-10).
 
 ## Repository
 
-* `ci.yml` still runs for pull requests from the rework branch; replace it
-  with `blessh.yml` when the branch merges.
 * Release notes and `docs/releases/` for the first blessh release.

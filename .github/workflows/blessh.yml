@@ -3,10 +3,17 @@ name: blessh
 on:
   push:
     branches:
-      - lomalkin/alternatives
+      - dev
     tags:
       - 'blessh-v*'
+  pull_request:
   workflow_dispatch:
+
+# A newer push to the same branch or pull request cancels the older run;
+# tag builds always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always

@@ -47,5 +47,5 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 | [testing.md](testing.md) | How to test on real hardware |
 | [hardware.md](hardware.md) | Hardware and OS versions verified so far; add a row after each hardware test |
 | [backlog.md](backlog.md) | Ideas that are agreed to be useful but not scheduled |
-| [releases/](releases/) | Release notes: what users must know when upgrading; the release job puts `<tag>.md` before the commit list |
+| `releases/` | Release notes, `<tag>.md` (for example `blessh-v0.1.3.md`): what users must know when upgrading; the release job puts it before the commit list |
 | [research/](research/) | Original architecture research: [ble-terminal-research.md](research/ble-terminal-research.md) with its working notes (historical; not updated); client platforms (web, macOS, Windows, iOS): working notes [client-platforms-notes.md](research/client-platforms-notes.md), summary for implementers [client-other-platforms.md](research/client-other-platforms.md) |
