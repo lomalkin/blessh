@@ -181,6 +181,10 @@ impl Drop for ChannelGuard {
                 .is_some_and(|t| t.elapsed() >= LINK_GRACE);
             if quiet && !s.channels.contains_key(&addr) && !s.has(addr) {
                 drop(s);
+                info!(
+                    "{addr}: no channel for {}s, disconnecting",
+                    LINK_GRACE.as_secs()
+                );
                 disconnect(&adapter, addr);
             }
         });
@@ -497,6 +501,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                     // A client reconnecting right after its previous session
                     // reads INFO before it opens a channel: keep the link
                     // from being dropped under it by the grace timer.
+                    debug!("{}: reads INFO", req.device_address);
                     info_sessions
                         .lock()
                         .unwrap()
