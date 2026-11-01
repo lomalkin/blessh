@@ -153,10 +153,10 @@ jobs:
   # macOS: one universal program (client and server on CoreBluetooth) in a
   # tarball, and the Homebrew formula that installs it (packaging/macos,
   # packaging/homebrew). With the secrets BLESSH_SIGN_P12 (base64 of a
-  # PKCS#12 file with the "blessh local signing" identity) and
-  # BLESSH_SIGN_P12_PASSWORD the program is signed with that identity, so
-  # that macOS keeps the Bluetooth permission across updates; otherwise it
-  # is signed ad hoc.
+  # PKCS#12 file with one code signing identity, a self-signed certificate
+  # is enough) and BLESSH_SIGN_P12_PASSWORD the program is signed with that
+  # identity, so that macOS keeps the Bluetooth permission across updates;
+  # otherwise it is signed ad hoc (docs/development.md, "Releases").
   macos:
     runs-on: macos-15
     env:
@@ -182,7 +182,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k ci "$kc" > /dev/null
           security list-keychains -d user | tr -d '"' | xargs security list-keychains -d user -s "$kc"
           rm "$RUNNER_TEMP/signing.p12"
-          echo "BLESSH_SIGN_IDENTITY=blessh local signing" >> "$GITHUB_ENV"
+          # The identity's SHA-1, whatever its name; a self-signed
+          # certificate is not trusted, which codesign accepts.
+          id=$(security find-identity -p codesigning "$kc" | awk '/^ *1\)/ { print $2; exit }')
+          [ -n "$id" ] || { echo "no code signing identity in BLESSH_SIGN_P12"; exit 1; }
+          echo "BLESSH_SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
       - name: Tarball
         run: packaging/macos/build-tarball.sh
       - name: Check the program
