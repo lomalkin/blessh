@@ -90,6 +90,28 @@ clients on one link; fixed in 0.2.2: the server disconnected a client that
 had already reconnected on a new link, about 10 s after its previous
 session).
 
+### blessh 0.2.0: short session cycles
+
+`tests/e2e-cycles.sh -n 10 -m all` (10 sessions back to back and 10 pairs
+of overlapping sessions, each running `echo`) on 2026-11-01 with
+0.2.0~dev1: Debian packages on Linux, the Homebrew formula with `blessh
+server enable` on the Mac. Machines: Raspberry Pi 3 B+ (Raspberry Pi OS
+trixie, BlueZ 5.82), Raspberry Pi Zero 2 W (bookworm, BlueZ 5.66, no LE
+Data Length Extension), ThinkPad X250 (Ubuntu 26.04, BlueZ 5.85), Intel
+NUC 11 (Ubuntu 24.04, BlueZ 5.72), MacBook Pro with Apple silicon (macOS
+15.7).
+
+| Client → server | Result | Notes |
+|---|---|---|
+| Pi 3 B+ → Pi Zero 2 W | 20/20 | A first run had 3 failures while the Pi 3 B+ also served manual sessions to the Mac (link setup refused with ENOSYS, HCI 0x3e) |
+| Pi Zero 2 W → Pi 3 B+ | 20/20 | |
+| ThinkPad X250 → NUC 11 | 20/20 | |
+| NUC 11 → ThinkPad X250 | 20/20 | |
+| Pi 3 B+ → MacBook | 20/20 | Sessions reach sshd through the localhost launchd job |
+| Pi Zero 2 W → MacBook | 20/20 | |
+| MacBook → Pi 3 B+ | 20/20 | |
+| MacBook → Pi Zero 2 W | 20/20 | The pair whose channel stalled before the channel handshake (0.1.3) |
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
