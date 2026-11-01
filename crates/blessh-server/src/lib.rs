@@ -15,6 +15,8 @@ mod linux_admin;
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_admin;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod report;
 #[cfg(target_os = "linux")]
 mod session;
 

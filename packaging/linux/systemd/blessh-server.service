@@ -1,6 +1,6 @@
 [Unit]
 Description=SSH over Bluetooth LE (blessh GATT server)
-Documentation=file:///usr/share/doc/blessh-server/README.md
+Documentation=file:///usr/share/doc/blessh/README.md
 After=bluetooth.service blessh-session.socket
 Requires=blessh-session.socket
 # Registrations live on the D-Bus connection to bluetoothd, so restart with it.

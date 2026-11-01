@@ -1,5 +1,8 @@
-# Extra arguments for the server, see `blessh server run --help`.
+# Extra arguments for the server, see `blessh server run --help`; restart
+# it after a change: sudo systemctl restart blessh-server
 # Examples:
 #   BLESSH_ARGS="--name my-pi"
 #   BLESSH_ARGS="--adapter hci1"
+#   BLESSH_ARGS="--discoverable"   also show the server in the Bluetooth
+#                                  device lists of phones and computers
 BLESSH_ARGS=""

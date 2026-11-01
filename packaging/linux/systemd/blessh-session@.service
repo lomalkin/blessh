@@ -1,6 +1,6 @@
 [Unit]
 Description=blessh SSH session
-Documentation=file:///usr/share/doc/blessh-server/README.md
+Documentation=file:///usr/share/doc/blessh/README.md
 # Uses the system SSH server's configuration and host keys
 # (/etc/blessh/sshd_config includes /etc/ssh/sshd_config), but not
 # ssh.service: the network SSH server may stay disabled.

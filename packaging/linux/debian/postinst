@@ -1,176 +1,41 @@
 #!/bin/sh
 set -e
 
-CONF=/etc/blessh/sshd_config
-KEY=/etc/ssh/ssh_host_ed25519_key.pub
+# The server stays off until `blessh server enable`, which also prints its
+# checks (`blessh server status`). A first installation prints how to
+# connect and how to serve; an upgrade restarts a server that is on.
 
-# The installer prints one table of checks, then the host key, the login
-# policy and (on first installation) the commands. Columns: what, its
-# state, OK/WARN/FAIL/NOTE, and for anything but OK a short reason or fix.
-row() {
-    printf '  %-19s %-26s %-4s  %s\n' "$1" "$2" "$3" "$4" | sed 's/ *$//'
-}
-
-BLUEZ=$(dpkg-query -W -f '${Version}' bluez 2>/dev/null || echo unknown)
-
-# BlueZ before 5.69 shares the Acquire* sockets of a characteristic between
-# all connected devices, and before 5.76 sends notifications to every
-# subscribed device: another device nearby can break an active session or
-# watch its encrypted traffic (docs/SECURITY.md, S-2).
-check_bluez() {
-    if dpkg --compare-versions "$BLUEZ" lt 5.76; then
-        row BlueZ "$BLUEZ" WARN "nearby devices can break sessions (fix: 5.76)"
-    else
-        row BlueZ "$BLUEZ" OK
+help() {
+    echo "blessh $(dpkg-query -W -f '${Version}' blessh): SSH over Bluetooth LE"
+    echo "  Connect   blessh                   pick a server in range"
+    echo "            blessh user@server       by its name"
+    echo "  Serve     blessh server enable     the server is off until then"
+    if [ ! -x /usr/sbin/sshd ]; then
+        echo "            (it needs OpenSSH's server first: sudo apt install openssh-server)"
     fi
-}
-
-# BlueZ before 5.67 enables EATT; /usr/lib/blessh/eatt-off turns it off
-# when blessh-server.service starts, unless main.conf sets Channels (docs/linux.md,
-# "Bookworm").
-check_eatt() {
-    dpkg --compare-versions "$BLUEZ" lt 5.67 || return 0
-    ch=$(sed -n 's/^[[:space:]]*Channels[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' /etc/bluetooth/main.conf 2>/dev/null | tail -n 1)
-    ecred=$(cat /sys/module/bluetooth/parameters/enable_ecred 2>/dev/null || true)
-    if [ "$ch" = 1 ]; then
-        row EATT "off (Channels = 1)" OK
-    elif [ -n "$ch" ]; then
-        row EATT "on (Channels = $ch)" WARN "phones are asked to pair"
-    elif [ "$ecred" = Y ]; then
-        row EATT on WARN "sudo systemctl restart blessh-server"
-    else
-        row EATT "off (kernel ECRED)" OK
-    fi
-}
-
-check_bluetooth_service() {
-    if ! systemctl -q is-enabled bluetooth.service 2>/dev/null; then
-        row bluetooth.service disabled FAIL "sudo systemctl enable --now bluetooth"
-    elif systemctl -q is-active bluetooth.service; then
-        row bluetooth.service "enabled, running" OK
-    else
-        row bluetooth.service "enabled, stopped" WARN "blessh starts it on demand"
-    fi
-}
-
-# Sets ADAPTER_OK when an adapter is usable. The package does not change
-# the rfkill state itself: a block is often deliberate.
-check_adapter() {
-    ADAPTER_OK=
-    found=
-    for d in /sys/class/bluetooth/hci*; do
-        case $d in *:*) continue ;; esac
-        [ -e "$d" ] || continue
-        found=1
-        hci=${d##*/}
-        hard=0 soft=0
-        for r in "$d"/rfkill*; do
-            [ -r "$r/soft" ] || continue
-            hard=$(cat "$r/hard") soft=$(cat "$r/soft")
-        done
-        if [ "$hard" = 1 ]; then
-            row "Adapter $hci" "blocked (hardware switch)" FAIL "hardware switch or firmware"
-        elif [ "$soft" = 1 ]; then
-            row "Adapter $hci" "blocked (rfkill)" FAIL "sudo rfkill unblock bluetooth"
-        else
-            powered=$(timeout 3 busctl --system get-property org.bluez "/org/bluez/$hci" org.bluez.Adapter1 Powered 2>/dev/null || true)
-            case $powered in
-            "b true") row "Adapter $hci" on OK; ADAPTER_OK=1 ;;
-            "b false") row "Adapter $hci" off WARN "bluetoothctl power on" ;;
-            *) row "Adapter $hci" present OK; ADAPTER_OK=1 ;;
-            esac
-        fi
-    done
-    [ -n "$found" ] || row Adapter "none found" WARN "blessh waits for one"
-}
-
-check_sshd() {
-    if /usr/sbin/sshd -t -f "$CONF" 2>/dev/null; then
-        row "sshd configuration" valid OK
-    else
-        row "sshd configuration" rejected FAIL "sudo sshd -t -f $CONF"
-    fi
-}
-
-check_daemon() {
-    if ! systemctl -q is-active blessh-server.service; then
-        row blessh-server "not running" FAIL "journalctl -u blessh-server"
-    elif [ -z "$ADAPTER_OK" ]; then
-        row blessh-server "running, waiting" WARN "starts serving once the adapter is on"
-    else
-        row blessh-server running OK
-    fi
-}
-
-# BLE sessions run sshd with the system SSH server's configuration
-# (/etc/blessh/sshd_config includes /etc/ssh/sshd_config).
-summary() {
-    BLESSH_ARGS=
-    [ ! -r /etc/default/blessh ] || . /etc/default/blessh
-    # shellcheck disable=SC2086
-    name=$(/usr/bin/blessh server run $BLESSH_ARGS --print-name 2>&1 | tail -n 1)
-    printf '  %-8s  %s\n' Name "$name (static host name, or --name in /etc/default/blessh)"
-    if [ -f "$KEY" ]; then
-        fp=$(ssh-keygen -l -f "$KEY" | awk '{ print $2 }')
-        printf '  %-8s  %s\n' "Host key" "$fp (same as network SSH)"
-    fi
-    if out=$(/usr/sbin/sshd -T -f "$CONF" 2>/dev/null); then
-        get() { echo "$out" | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }
-        pw=no
-        if [ "$(get passwordauthentication)" = yes ] || [ "$(get kbdinteractiveauthentication)" = yes ]; then
-            pw=yes
-        fi
-        policy="passwords $pw, root $(get permitrootlogin)"
-        for k in AllowUsers AllowGroups DenyUsers DenyGroups; do
-            v=$(get "$(echo $k | tr A-Z a-z)")
-            [ -z "$v" ] || policy="$policy, $k $v"
-        done
-        printf '  %-8s  %s\n' Policy "as network SSH: $policy"
-    fi
-    printf '  %-8s  %s\n' Override "$CONF"
-}
-
-# Printed on first installation only.
-commands() {
-    echo
-    printf '  %-8s  %-8s  %s\n' Commands status "blessh server status"
-    printf '  %-8s  %-8s  %s\n' "" disable "blessh server disable (stops it, also at boot)"
-    printf '  %-8s  %-8s  %s\n' "" enable "blessh server enable"
-    printf '  %-8s  %-8s  %s\n' "" rename "BLESSH_ARGS=\"--name NAME\" in /etc/default/blessh, then restart"
+    echo "  Docs      /usr/share/doc/blessh/README.md"
 }
 
 if [ "$1" = configure ]; then
     systemd-sysusers blessh.conf
-    systemd=
     if [ -d /run/systemd/system ]; then
-        systemd=1
         # The D-Bus policy names _blessh; the bus ignores it if it read the
         # file before systemd-sysusers created the user.
         systemctl reload dbus.service 2>/dev/null || true
         systemctl daemon-reload
-        systemctl enable blessh-session.socket blessh-server.service >/dev/null
-        systemctl restart blessh-session.socket
-        # Also when bluetoothd is not running: the daemon starts it through
-        # D-Bus activation if bluetooth.service is enabled.
-        if systemctl -q is-active bluetooth.service || systemctl -q is-enabled bluetooth.service; then
-            systemctl restart blessh-server.service
+        if [ -n "$2" ] && systemctl -q is-enabled blessh-server.service 2>/dev/null; then
+            systemctl restart blessh-session.socket
+            # Also when bluetoothd is not running: the daemon starts it
+            # through D-Bus activation if bluetooth.service is enabled.
+            if systemctl -q is-active bluetooth.service || systemctl -q is-enabled bluetooth.service; then
+                systemctl restart blessh-server.service
+            fi
+            echo "blessh $(dpkg-query -W -f '${Version}' blessh): the server was restarted"
+            /usr/bin/blessh server status || true
         fi
     fi
-
-    # sshd -t / -T need sshd's privilege separation directory; sessions get it
-    # from blessh-session@.service, but ssh.service may never have run.
-    install -d -m 0755 /run/sshd
-    echo "blessh-server $(dpkg-query -W -f '${Version}' blessh-server): SSH over Bluetooth LE"
-    check_bluez
-    check_eatt
-    [ -z "$systemd" ] || check_bluetooth_service
-    check_adapter
-    check_sshd
-    [ -z "$systemd" ] || check_daemon
-    echo
-    summary
     if [ -z "$2" ]; then
-        commands
+        help
     fi
 fi
 

@@ -161,45 +161,67 @@ fn disable() -> Result<(), String> {
 }
 
 fn status() -> i32 {
-    let row = |k: &str, v: &str| println!("  {k:<10} {v}");
-    match server_name(None, Path::new(NAME_FILE)) {
-        Ok(n) => row("Name", &format!("{n} (another one: put it in {NAME_FILE})")),
-        Err(e) => row("Name", &e),
+    use crate::report::{check, info, Level};
+    match corebluetooth::permission() {
+        Permission::Allowed => check("Bluetooth", "allowed", Level::Ok, ""),
+        Permission::Undecided => check(
+            "Bluetooth",
+            "not decided yet",
+            Level::Note,
+            "blessh server enable asks",
+        ),
+        Permission::Denied => check(
+            "Bluetooth",
+            "denied",
+            Level::Fail,
+            "System Settings, Privacy & Security, Bluetooth",
+        ),
     }
     let running = service_pid();
-    row(
-        "Server",
-        &match running {
-            Some(Some(pid)) => format!("running (pid {pid}), brew service {FORMULA}"),
-            Some(None) => format!("started but not running, brew service {FORMULA}"),
-            None => "not started (blessh server enable)".into(),
-        },
-    );
-    let sshd = Path::new(DAEMON_PLIST).exists() && daemon_loaded();
-    row(
-        "SSH",
-        &if sshd {
-            format!("system sshd on 127.0.0.1 port {SSHD_PORT}, configuration {SSHD_CONFIG}")
-        } else {
-            "the sshd job is not installed (blessh server enable)".into()
-        },
-    );
-    row(
-        "Bluetooth",
-        match corebluetooth::permission() {
-            Permission::Allowed => "allowed",
-            Permission::Undecided => "not decided yet (blessh server enable asks)",
-            Permission::Denied => {
-                "denied: allow blessh in System Settings, Privacy & Security, Bluetooth"
-            }
-        },
-    );
-    if let Some(fp) = fingerprint() {
-        row("Host key", &format!("{fp} (same as Remote Login)"));
+    match running {
+        Some(Some(pid)) => check("Server", &format!("running (pid {pid})"), Level::Ok, ""),
+        Some(None) => check(
+            "Server",
+            "started, not running",
+            Level::Fail,
+            &format!("brew services info {FORMULA}"),
+        ),
+        None => check("Server", "off", Level::Note, "blessh server enable"),
     }
+    let sshd = Path::new(DAEMON_PLIST).exists() && daemon_loaded();
+    if sshd {
+        check(
+            "sshd job",
+            &format!("127.0.0.1 port {SSHD_PORT}"),
+            Level::Ok,
+            "",
+        );
+    } else {
+        check(
+            "sshd job",
+            "not installed",
+            Level::Note,
+            "blessh server enable",
+        );
+    }
+    check(
+        "Visible",
+        "also in device lists",
+        Level::Note,
+        "macOS decides (docs/macos-server.md)",
+    );
+    println!();
+    match server_name(None, Path::new(NAME_FILE)) {
+        Ok(n) => info("Name", &format!("{n} (another one: put it in {NAME_FILE})")),
+        Err(e) => info("Name", &e),
+    }
+    if let Some(fp) = crate::report::fingerprint(HOST_KEY) {
+        info("Host key", &format!("{fp} (same as Remote Login)"));
+    }
+    info("Override", SSHD_CONFIG);
     if let Some(prefix) = brew().and_then(|b| b.parent()?.parent().map(Path::to_path_buf)) {
-        row(
-            "Log",
+        info(
+            "Logs",
             &prefix.join("var/log/blessh.log").display().to_string(),
         );
     }
@@ -307,17 +329,6 @@ fn old_config() -> bool {
 fn port_taken() -> bool {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, SSHD_PORT));
     TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
-}
-
-fn fingerprint() -> Option<String> {
-    let out = Command::new("ssh-keygen")
-        .args(["-l", "-f", HOST_KEY])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .nth(1)
-        .map(str::to_owned)
 }
 
 /// The 0.1 tarball's LaunchAgent, in the user's own domain.

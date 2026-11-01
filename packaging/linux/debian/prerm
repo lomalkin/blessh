@@ -1,9 +1,13 @@
 #!/bin/sh
 set -e
 
-if [ -d /run/systemd/system ] && [ "$1" = remove ]; then
-    systemctl stop blessh-server.service blessh-session.socket || true
-    systemctl disable blessh-server.service blessh-session.socket >/dev/null || true
+# Removing the package turns the server off for good: stop it, and drop
+# the links `blessh server enable` made (also without a running systemd).
+if [ "$1" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop blessh-server.service blessh-session.socket || true
+    fi
+    systemctl disable blessh-server.service blessh-session.socket > /dev/null 2>&1 || true
 fi
 
 exit 0

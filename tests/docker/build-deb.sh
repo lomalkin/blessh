@@ -1,6 +1,6 @@
 #!/bin/sh
-# Builds the Debian packages (blessh-server, blessh-client; amd64 and
-# arm64) in a Debian container, as the CI job does, into dist/.
+# Builds the Debian package blessh (amd64 and arm64) in a Debian
+# container, as the CI job does, into dist/.
 #
 #   tests/docker/build-deb.sh [deb-version]
 #
@@ -16,9 +16,8 @@ mkdir -p dist
 $DOCKER run --rm -v "$PWD:/src" -v blessh-cargo-registry:/root/.cargo/registry -v blessh-deb-target:/src/target \
     blessh-deb-builder sh -ec "
     for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-        for p in blessh-server blessh-client; do
-            cargo deb -p \$p --target \$t --deb-version '$VER'
-        done
+        rm -f target/\$t/debian/*.deb
+        cargo deb -p blessh-client --target \$t --deb-version '$VER'
         cp target/\$t/debian/*.deb /src/dist/
     done
     chown -R $(id -u):$(id -g) /src/dist"

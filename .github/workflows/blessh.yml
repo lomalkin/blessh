@@ -118,9 +118,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
         run: |
-          for p in blessh-server blessh-client; do
-            cargo deb -p $p --target ${{ matrix.target }} --deb-version "$DEB_VERSION"
-          done
+          cargo deb -p blessh-client --target ${{ matrix.target }} --deb-version "$DEB_VERSION"
           for f in target/${{ matrix.target }}/debian/*.deb; do
             dpkg-deb -f "$f" Package Version Architecture
           done
@@ -129,9 +127,9 @@ jobs:
           name: blessh-${{ matrix.target }}
           path: target/${{ matrix.target }}/debian/*.deb
 
-  # The amd64 packages installed in a clean Debian: BLE sessions get the
-  # system SSH server's configuration, the client runs, purge leaves
-  # nothing behind.
+  # The amd64 package installed in a clean Debian, by apt and by the
+  # installer script: BLE sessions get the system SSH server's
+  # configuration, the client runs, purge leaves nothing behind.
   package:
     needs: deb
     runs-on: ubuntu-latest
@@ -148,7 +146,7 @@ jobs:
       - name: Install and check
         run: |
           apt-get update
-          tests/e2e-package.sh dist/blessh-server_*.deb dist/blessh-client_*.deb
+          tests/e2e-package.sh dist/blessh_*.deb
 
   # macOS: one universal program (client and server on CoreBluetooth) in a
   # tarball, and the Homebrew formula that installs it (packaging/macos,
@@ -233,8 +231,10 @@ jobs:
       - name: Checksums and notes
         run: |
           mv dist/homebrew homebrew
+          packaging/linux/render-install.sh dist > install.sh
+          mv install.sh dist/
           cd dist
-          sha256sum *.deb *.tar.gz > SHA256SUMS
+          sha256sum *.deb *.tar.gz install.sh > SHA256SUMS
           cat SHA256SUMS
           cd ..
           prev=$(git describe --tags --match 'blessh-v*' --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)

@@ -1,6 +1,6 @@
 [package]
 name = "blessh-client"
-description = "SSH sessions over Bluetooth Low Energy: desktop client"
+description = "SSH over Bluetooth Low Energy: client and server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -28,20 +28,38 @@ bluer = { workspace = true }
 workspace = true
 
 [package.metadata.deb]
-name = "blessh-client"
+name = "blessh"
 maintainer = "Aluminique"
 copyright = "2026, Aluminique"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-blessh connects to a blessh server over Bluetooth Low Energy and runs the \
-system ssh through it: `blessh user@server` with the server's advertised \
-name or Bluetooth address. It needs BlueZ; no pairing is involved, the SSH \
-host key and login provide the security. The same program is the server \
-(`blessh server run`), set up by the blessh-server package."""
-depends = "bluez (>= 5.55), openssh-client"
+blessh runs SSH over Bluetooth Low Energy, without pairing: the SSH host \
+key and login provide the security. As a client, `blessh` lists the \
+servers in range and runs the system ssh through the one chosen \
+(`blessh user@server` names it directly). As a server, it is off until \
+`blessh server enable`: an unprivileged daemon then registers a GATT \
+service with BlueZ, listens on an L2CAP connection-oriented channel and \
+hands each session to a per-session `sshd -i` started by systemd socket \
+activation, with the system SSH server's configuration. The BlueZ \
+configuration is not changed and the adapter is not taken over. With \
+BlueZ before 5.67 the kernel's ECRED L2CAP mode is turned off while the \
+server runs, which keeps EATT off as in later BlueZ versions."""
+depends = "bluez (>= 5.55), openssh-client, systemd"
+suggests = "openssh-server"
 section = "net"
 priority = "optional"
+maintainer-scripts = "../../packaging/linux/debian/"
+conf-files = ["/etc/blessh/sshd_config", "/etc/default/blessh"]
 assets = [
     ["target/release/blessh", "usr/bin/", "755"],
-    ["../../README.md", "usr/share/doc/blessh-client/", "644"],
+    ["../../packaging/linux/eatt-off", "usr/lib/blessh/", "755"],
+    ["../../packaging/linux/sshd_config", "etc/blessh/sshd_config", "644"],
+    ["../../packaging/linux/default", "etc/default/blessh", "644"],
+    ["../../packaging/linux/systemd/blessh-server.service", "usr/lib/systemd/system/", "644"],
+    ["../../packaging/linux/systemd/blessh-session.socket", "usr/lib/systemd/system/", "644"],
+    ["../../packaging/linux/systemd/blessh-session@.service", "usr/lib/systemd/system/", "644"],
+    ["../../packaging/linux/sysusers.conf", "usr/lib/sysusers.d/blessh.conf", "644"],
+    ["../../packaging/linux/dbus.conf", "usr/share/dbus-1/system.d/blessh.conf", "644"],
+    ["../../README.md", "usr/share/doc/blessh/", "644"],
+    ["../../docs/protocol.md", "usr/share/doc/blessh/", "644"],
 ]

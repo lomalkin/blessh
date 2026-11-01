@@ -1,6 +1,6 @@
 [Unit]
 Description=blessh session socket (one sshd -i per BLE client)
-Documentation=file:///usr/share/doc/blessh-server/README.md
+Documentation=file:///usr/share/doc/blessh/README.md
 
 [Socket]
 ListenStream=/run/blessh/session.sock
