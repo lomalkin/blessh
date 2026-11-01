@@ -45,6 +45,18 @@ restarts itself with the new version once no session is open.
 `disable` stops the service and removes the launchd job; `/etc/blessh`
 (the sshd configuration and the name file) stays until removed by hand.
 
+## The Bluetooth permission
+
+macOS asks once whether blessh may use Bluetooth, and keys the answer to
+the program's path and signature (blessh is not an app bundle). Homebrew
+puts every version under a new path, so the formula installs the program
+in `libexec` and `bin/blessh` runs a copy at a path that stays,
+`$(brew --prefix)/var/lib/blessh/blessh`. Installs and upgrades replace
+that copy by renaming a new one over it; the release builds are signed with
+the same certificate, so the permission holds across upgrades and the
+running server restarts with the new version once idle. The copy stays
+after `brew uninstall`; remove `$(brew --prefix)/var/lib/blessh` by hand.
+
 ## Names
 
 The server advertises the computer's HostName if one is set, else its

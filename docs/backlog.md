@@ -20,12 +20,14 @@ rework (2026-10).
   criterion so far: as little change to the system and as few settings as
   possible.
 * A signed `.pkg` for Macs without Homebrew.
-* The server as an `.app` bundle: a stable Bluetooth permission (TCC
-  keys it to the code signature; today it is the terminal app's, and an
-  unsigned binary may be asked again after an update), its own entry in
-  the Bluetooth and Login Items settings (SMAppService), and a Homebrew
-  cask. Needs the bundle layout, SMAppService registration, and for other
-  machines a Developer ID signature and notarization.
+* blessh as an `.app` bundle: macOS keys the Bluetooth permission of a
+  program outside a bundle to its path (and its signature), which is why
+  the formula runs blessh from a copy at a stable path
+  (`var/lib/blessh/blessh`); a bundle would be keyed by its identifier
+  instead, and would give its own entry in the Bluetooth and Login Items
+  settings (SMAppService) and a Homebrew cask. Needs the bundle layout,
+  SMAppService registration, and for other machines a Developer ID
+  signature and notarization.
 * Server names on macOS come from HostName or ComputerName at every
   start, without the " (N)" macOS appends on a network conflict; a name
   the user really ends in " (N)" loses it as well. A name like Linux's
