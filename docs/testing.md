@@ -14,7 +14,7 @@ not done until these pass.
 |---|---|
 | Formatting, lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` |
 | Protocol state machine, relay, preamble, client argument parsing | `cargo test` |
-| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh-session` | `tests/e2e-loopback.sh` |
+| OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh server session` | `tests/e2e-loopback.sh` |
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
 | Packages for arm64 and amd64 (both `blessh-server` and `blessh-client`) | job `deb`; locally `tests/docker/build-deb.sh` |
@@ -55,7 +55,7 @@ each bench server, from the installation of the release candidate.
 Server:
 
 ```
-sudo apt install ./blessh-server_<version>_<arch>.deb
+sudo apt install ./blessh-client_<version>_<arch>.deb ./blessh-server_<version>_<arch>.deb
 ```
 
 The output shows the SSH host key fingerprint (the system's, the same as
@@ -70,7 +70,7 @@ journalctl -u blessh-server -n 20     # ends with "ready (BlueZ GATT application
 ```
 
 On Bookworm (BlueZ 5.66) the journal of `blessh-server.service` says that ECRED
-was turned off (README, "Bookworm"); the phone must not show a pairing
+was turned off (linux.md, "Bookworm"); the phone must not show a pairing
 request.
 
 The daemon advertises the host name. To change it, set
@@ -88,10 +88,9 @@ installs next to a Play Store ConnectBot):
 Desktop Linux client (optional):
 
 ```
-sudo apt install ./blessh-server_<version>_<arch>.deb
-sudo systemctl disable --now blessh-server.service blessh-session.socket   # client-only machine
-blessh --scan
-ssh -o ProxyCommand='blessh <server-address>' -o HostKeyAlias=<name>-ble <user>@<name>-ble
+sudo apt install ./blessh-client_<version>_<arch>.deb
+blessh scan
+blessh <user>@<name>
 ```
 
 ## Cases

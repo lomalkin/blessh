@@ -10,11 +10,16 @@ rework (2026-10).
   `canSendWriteWithoutResponse`; until then macOS needs L2CAP peers.
 * Wake the channel thread on writes instead of its 10 ms tick (a run loop
   source), and bound sessions per device as on Linux.
-* Packaging: a Homebrew tap with two separate formulae, `blessh-client`
-  (the common case on macOS) and `blessh-server` (`brew services` for the
-  LaunchAgent, a `sudo` step for the sshd LaunchDaemon); no meta formula,
-  as the two have different requirements. Built locally until the
-  sessions are reliable; later a signed `.pkg`.
+* Logs of BLE sessions in sshd: today sshd logs them as coming from
+  127.0.0.1 (macOS) or "UNKNOWN" (Linux), and the server's own log joins
+  them by the source port (macOS) or the session unit (Linux). Possible
+  later, if wanted despite touching the administrator's settings:
+  `LogLevel VERBOSE` above the `Include` in `/etc/blessh/sshd_config`
+  (sshd then logs the local port, which marks BLE sessions), and the
+  server's lines in the unified log under a subsystem `org.blessh`. The
+  criterion so far: as little change to the system and as few settings as
+  possible.
+* A signed `.pkg` for Macs without Homebrew.
 * The server as an `.app` bundle: a stable Bluetooth permission (TCC
   keys it to the code signature; today it is the terminal app's, and an
   unsigned binary may be asked again after an update), its own entry in
@@ -30,10 +35,15 @@ rework (2026-10).
   between a Mac and Linux, 10 to 30 KB/s between Linux machines): look at
   the channel thread's buffers and tick, the connection interval the
   central asks for, and the L2CAP credits.
-* A user-level sshd cannot serve sessions on macOS (BSM audit needs
-  root): tests against a macOS server need the LaunchDaemon.
 * Verify on hardware: CoreBluetooth against BlueZ over the channel, the
   permission prompt for a LaunchAgent, sleep and logout behaviour.
+
+## Distribution
+
+* An APT repository (for example on GitHub Pages), so that Debian and
+  Raspberry Pi OS users get updates with `apt upgrade` instead of
+  downloading packages from Releases.
+* A short animation of a session in the README.
 
 ## Clients
 

@@ -44,6 +44,11 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 | [architecture.md](architecture.md) | Principles, platforms, transports, components, session model |
 | [protocol.md](protocol.md) | Wire protocol: discovery, GATT service, L2CAP channel, BleStream (normative) |
 | [compatibility.md](compatibility.md) | What installed clients rely on and how the protocol grows |
+| [linux.md](linux.md) | Linux: packages, server settings, logs and audit, requirements, desktop systems, Bookworm |
+| [macos-server.md](macos-server.md) | The macOS server: setup, names, logs, and how it reaches sshd (the options compared) |
+| [client.md](client.md) | The `blessh` command: usage, server names, transports and fallback, Linux and macOS notes |
+| [development.md](development.md) | Layout, checks, macOS builds, releases and their secrets |
+| [SECURITY.md](SECURITY.md) | Recommendations, threat model, findings |
 | [testing.md](testing.md) | How to test on real hardware |
 | [hardware.md](hardware.md) | Hardware and OS versions verified so far; add a row after each hardware test |
 | [backlog.md](backlog.md) | Ideas that are agreed to be useful but not scheduled |

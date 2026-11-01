@@ -9,10 +9,29 @@ their status changes.
 Do not report vulnerabilities in public issues. Use GitHub's private
 vulnerability reporting (Security tab, "Report a vulnerability") or a draft
 security advisory; while the repository is private, contact the
-maintainers directly. Include the affected version (`dpkg -s blessh-server`),
+maintainers directly. Include the affected version (`blessh --version`),
 the BlueZ and OS versions, and steps to reproduce. Fixes go into the next
 release; only the latest release is supported. Vulnerabilities of the
 Android client belong to the client's repository.
+
+## Recommendations
+
+Anyone within Bluetooth range can connect to a server and try to log in;
+the BLE link is neither paired nor encrypted, and SSH provides
+authentication and encryption.
+
+* Compare the host key fingerprint on the first connection.
+* Log in with public keys only: turn passwords off
+  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no` in the
+  system SSH configuration; this applies to BLE too). Anyone in radio range
+  can try passwords, in up to `--max-sessions` sessions at once, and sshd
+  cannot rate-limit BLE clients by source (S-4).
+* Limit who may log in over BLE only with `AllowGroups` above the
+  `Include` line in `/etc/blessh/sshd_config`.
+* Use BlueZ 5.76 or later (Debian trixie) where the GATT stream is in use.
+  With older BlueZ, other BLE devices nearby can break an active GATT
+  session or observe its encrypted traffic and keystroke timing (S-2); the
+  installer warns about this. L2CAP channels are not affected.
 
 ## Threat model
 
@@ -46,9 +65,9 @@ the phone.
 | Component | Runs as | Input from A1 | Controls |
 |---|---|---|---|
 | bluetoothd (BlueZ) | root | ATT/GATT, SMP, L2CAP | distribution package; not modified by blessh |
-| `blessh-server` | `_blessh`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
+| `blessh server run` | `_blessh`, no capabilities, `NoNewPrivs`, seccomp `@system-service`, read-only file system, private `/tmp`, `AF_UNIX`/`AF_BLUETOOTH` only (systemd exposure 1.7); D-Bus policy limits it to the BlueZ calls it needs | BleStream frames | sans-IO protocol state machine with bounded buffers (reorder window 64 frames, credit-limited receive queue, 8 KiB read-ahead); fuzzed, model checked |
 | `/run/blessh/session.sock` | socket `0600 _blessh` | none (daemon only) | systemd socket activation, `MaxConnections=4` |
-| `blessh-session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
+| `blessh server session` | root, per session | none directly; one line from the daemon | strict parser (fixed format, 128 bytes, 10 s timeout); execs sshd |
 | `sshd -i -f /etc/blessh/sshd_config` | root, then the user | SSH protocol | OpenSSH with the system SSH server's configuration (the file only includes `/etc/ssh/sshd_config`) |
 
 The SSH host keys are the system's (`0600 root`); the daemon reads only the
@@ -61,13 +80,13 @@ public key, to log its fingerprint.
 | S-1 | Medium | Fixed (0.1.3) | Journal entries could be forged through CLOSE messages |
 | S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
 | S-3 | Medium | Partly mitigated (0.1.3), rest accepted | One client can occupy the only session slot |
-| S-4 | Medium | Accepted; README recommends public keys only | Password guessing over BLE is not rate limited by source |
+| S-4 | Medium | Accepted; public keys only are recommended | Password guessing over BLE is not rate limited by source |
 | S-5 | Low | Fixed (0.1.3) | A compromised daemon controls all of BlueZ over D-Bus |
 | S-6 | Low | Superseded (0.2.0): system policy | Unix socket forwarding was allowed |
 | S-7 | Info | Documented, installer hint (0.1.3) | The host name is broadcast |
 | S-8 | Info | Accepted | BLE addresses in the audit log are weak identities |
 | S-9 | Info | Accepted | The daemon is trusted for the audit fields it passes on |
-| S-10 | Info | Fixed (0.1.3) | Integer overflow in `blessh-session --timeout` |
+| S-10 | Info | Fixed (0.1.3) | Integer overflow in the session helper's `--timeout` |
 | S-11 | Medium | Fixed (0.2.0) | BLE logins did not follow the system SSH server's policy |
 
 ### S-1 Forged journal entries through CLOSE messages
@@ -106,7 +125,7 @@ does not call Acquire* for it.
 Affected: Bookworm (5.66). Not affected: Trixie (5.82). No CVE was found
 for the upstream fixes, which went in as ordinary bug fixes; Debian
 bookworm's bluez 5.66-1+deb12u2 does not carry them.
-Decision: BlueZ ≥ 5.76 is recommended (README) and the installer warns on
+Decision: BlueZ ≥ 5.76 is recommended (Recommendations) and the installer warns on
 older versions. Not done: disconnecting other LE devices during a session
 (it would also cut unrelated devices) and keystroke timing obfuscation in
 the client (it costs bandwidth on a slow link); the exposure is accepted
@@ -137,7 +156,7 @@ BLE addresses of phones rotate, so a per-address limit in the daemon is
 weak, and a global limit on new sessions would let a stranger lock out the
 owner.
 
-Accepted. The README recommends public keys only, which makes guessing
+Accepted. The recommendations above say public keys only, which makes guessing
 pointless; administrators who keep passwords can limit BLE logins further
 in the system configuration (`AllowGroups` above the `Include` line,
 `pam_faillock`).
@@ -186,7 +205,7 @@ a later protocol version.
 
 ### S-9 Audit fields from the daemon
 
-`blessh-session` (root) logs the session id and device address the daemon
+`blessh server session` (root) logs the session id and device address the daemon
 sends. Only `_blessh` can connect to the session socket, so the line is as
 trustworthy as the daemon; a compromised daemon (A3) could forge it, but
 gains nothing else: sshd still authenticates.

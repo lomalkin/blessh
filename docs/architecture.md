@@ -43,7 +43,7 @@ fit together. The wire details are in [protocol.md](protocol.md).
 
 Every combination works without pairing. Two things outside the protocol
 can still ask for it: BlueZ before 5.67 opens EATT to connecting phones
-(the server package turns that off, see README, "Bookworm"), and
+(the server package turns that off, see linux.md, "Bookworm"), and
 bluetoothd on a Linux machine pairs on its own with a peer that publishes a
 GATT service requiring encryption (BLE MIDI from WirePlumber; documented,
 not fixable here).
@@ -81,12 +81,15 @@ crates/blessh-core     protocol code without I/O: BleStream frames and link stat
 crates/blessh-ble      platform Bluetooth layer shared by server and client:
                        BlueZ (GATT packet transports, L2CAP helpers) and
                        CoreBluetooth (central, peripheral, L2CAP streams)
-crates/blessh-server   blessh-server (daemon) and blessh-session (root helper)
-crates/blessh-client   blessh: ssh wrapper, scan, proxy
+crates/blessh-server   the server as a library: `blessh server run` (daemon),
+                       enable/disable/status, `session` (Linux root helper)
+crates/blessh-client   the one program, blessh: ssh wrapper, scan, proxy, and
+                       `blessh server` from blessh-server
 packaging/linux        systemd units, sshd_config, D-Bus policy, sysusers,
                        maintainer scripts
-packaging/macos        Info-*.plist embedded in the binaries, launchd jobs,
-                       install script
+packaging/macos        Info.plist embedded in the program, the sshd launchd
+                       job and its configuration, tarball and signing
+packaging/homebrew     the formula template for the tap
 web/                   web client (planned)
 ```
 
@@ -96,18 +99,21 @@ GATT service and the advertisement with bluetoothd and opens the L2CAP
 listener directly in the kernel (no privilege is needed for dynamic PSMs).
 Every session, whichever transport, becomes one connection to
 `/run/blessh/session.sock`, a systemd socket with `Accept=yes` that starts
-`blessh-session@.service` as root: `blessh-session` reads one preamble line
+`blessh-session@.service` as root: `blessh server session` reads one preamble line
 (session id, device address and type, transport), logs it, and execs
 `sshd -i -f /etc/blessh/sshd_config`, which only includes the system
 `sshd_config`. sshd sees the client as "UNKNOWN", so `Match Address` and
 `PerSourcePenalties` do not apply to BLE.
 
-On macOS the server is a LaunchAgent in the user's session (CoreBluetooth
-refuses daemons), hands every channel to a launchd socket with
-`inetdCompatibility` where `blessh-session` and `sshd -i` run as root, and
-serves INFO and the PSM but not the GATT stream. CoreBluetooth's managers
-run their delegates on a private dispatch queue; a channel's NSStreams are
-served by a thread of their own and appear as a tokio stream.
+On macOS the server is a Homebrew service (a LaunchAgent) in the user's
+session, since CoreBluetooth refuses daemons, and serves INFO and the PSM
+but not the GATT stream. It hands every channel to a launchd job that
+`blessh server enable` installs once: Apple's `sshd -i` per connection on
+127.0.0.1, with `/etc/blessh/sshd_config` including the system
+configuration, so no blessh code runs as root
+([macos-server.md](macos-server.md)). CoreBluetooth's managers run their
+delegates on a private dispatch queue; a channel's NSStreams are served by
+a thread of their own and appear as a tokio stream.
 
 The client (`blessh`) finds the server through bluetoothd, connects, reads
 INFO, opens the channel through the kernel (or the GATT stream through
@@ -131,7 +137,9 @@ feature works unchanged.
   advertise while connected become visible again that way.
 * Every session has a random 64-bit id, logged by the daemon with the
   device address, the transport and, at the end, duration, byte counts and
-  the reason; `blessh-session` logs the same id before sshd's lines.
+  the reason; the session helper logs the same id before sshd's lines
+  (Linux); on macOS the server logs the session's local TCP port, which
+  sshd logs too.
 * Phones use resolvable private addresses: the address identifies a
   connection, not a device.
 

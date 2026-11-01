@@ -1,157 +1,83 @@
 # blessh
 
-SSH sessions over Bluetooth Low Energy: `blessh alice@my-pi` from a laptop,
-with no pairing, no network and no IP address to know. The server runs on
-Linux with BlueZ; the client in this repository runs on Linux, the Android
-client is ConnectBot BLE, and macOS, iOS, Windows and web clients follow the
-same protocol. Principles, platforms and components:
-[docs/architecture.md](docs/architecture.md).
+[![CI](https://github.com/lomalkin/blessh/actions/workflows/blessh.yml/badge.svg)](https://github.com/lomalkin/blessh/actions/workflows/blessh.yml)
+[![License: BSD-2-Clause](https://img.shields.io/badge/license-BSD--2--Clause-blue.svg)](LICENSE)
 
-```
-blessh (laptop) ──BLE L2CAP channel, or GATT stream──▶ kernel / bluetoothd ──▶ blessh-server (_blessh)
-                                                                                     │ AF_UNIX
-                                                            systemd blessh-session.socket (Accept=yes)
-                                                                                     ▼
-                                                            blessh-session (logs the BLE device) → exec
-                                                            sshd -i -f /etc/blessh/sshd_config → PAM, PTY, shell
-```
+SSH over Bluetooth Low Energy: `blessh alice@my-pi` from a laptop, with no
+pairing, no network and no IP address to know. One program, `blessh`, is
+the client and the server, on Linux and macOS.
+
+## Principles
 
 * **No pairing.** The BLE link is neither paired nor encrypted; SSH does
-  all of it: the client pins the host key, users log in with their system
-  password (PAM) or `~/.ssh/authorized_keys`.
-* **One more way into the system SSH server.** BLE sessions get the
-  configuration of `/etc/ssh/sshd_config` (authentication, allowed users,
-  host keys): whatever is allowed or refused over the network is allowed or
-  refused over BLE.
-* **No BlueZ reconfiguration.** The daemon registers a GATT service and an
-  advertisement over D-Bus and listens on an L2CAP channel through the
-  kernel; no `main.conf` changes, no `--experimental`, no pairing agent.
-  Other Bluetooth devices and services keep working. (On BlueZ before 5.67
-  EATT is kept off through a kernel setting, see "Bookworm" below.)
-* **Unprivileged daemon.** Radio input is parsed by `_blessh`; the only root
-  code is `blessh-session`, which reads one line from the daemon and execs
-  OpenSSH's `sshd`, started per session by systemd. The network SSH service
-  can stay disabled.
-* **Several sessions.** Every L2CAP channel is one session: a client may
-  open several, and several clients may connect, up to a limit (4 by
-  default). The GATT stream carries one session at a time.
-* **Session lifetime = BLE channel.** When the channel or the link goes
-  away, sshd gets EOF and the session receives SIGHUP, exactly like a
-  dropped network SSH connection.
+  all of it: the client pins the host key, users log in with their keys or
+  password.
+* **The system's SSH server.** BLE sessions get the system sshd's
+  configuration, host keys and login policy: what is allowed or refused
+  over the network is allowed or refused over BLE.
+* **Minimal changes to the system.** The Bluetooth stack is not
+  reconfigured and other Bluetooth devices keep working; there is nothing
+  to configure. On macOS no blessh code runs as root.
+* **Any client, any server.** Every client works with every server on
+  every platform, and the protocol only grows in ways that keep installed
+  clients working ([compatibility.md](docs/compatibility.md)).
 
-Wire protocol: [docs/protocol.md](docs/protocol.md); what installed clients
-rely on: [docs/compatibility.md](docs/compatibility.md). Test procedure:
-[docs/testing.md](docs/testing.md). Repository conventions:
-[docs/AGENTS.md](docs/AGENTS.md).
+## Platforms
 
-## Install the server
+| Platform | Server | Client |
+|---|---|---|
+| Linux: Debian, Ubuntu, Raspberry Pi OS (BlueZ 5.55 or later) | yes | yes |
+| macOS | yes | yes |
+| Android 10 and later | — | ConnectBot BLE (coming) |
+| iOS, Windows, web | — | planned |
 
-Packages are on the repository's Releases page: `arm64` for 64-bit
-Raspberry Pi OS and Debian, `amd64` for PCs. Check the download against
-`SHA256SUMS`, then install:
+# Installing
+
+## macOS
+
+```
+brew install lomalkin/tap/blessh
+```
+
+To serve this Mac over Bluetooth as well (optional):
+
+```
+blessh server enable     # asks for sudo once
+blessh server status
+blessh server disable
+```
+
+macOS asks once whether blessh may use Bluetooth. Remote Login does not
+have to be on. Details: [docs/macos-server.md](docs/macos-server.md).
+
+## Debian, Ubuntu, Raspberry Pi OS
+
+Download the packages for your architecture (`arm64` or `amd64`) and
+`SHA256SUMS` from [Releases](https://github.com/lomalkin/blessh/releases),
+then:
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-sudo apt install ./blessh-server_<version>_arm64.deb
+sudo apt install ./blessh-client_<version>_<arch>.deb    # client
+sudo apt install ./blessh-server_<version>_<arch>.deb    # server, after the client
 ```
 
-The package creates the `_blessh` user (allowed only the BlueZ calls the
-daemon needs, through a D-Bus policy), enables and starts
-`blessh-session.socket` and `blessh-server.service`, and prints a table of
-checks (BlueZ version, Bluetooth service and adapter, sshd configuration,
-daemon; each with OK, WARN or FAIL and what to do), the SSH host key
-fingerprint and the login policy BLE sessions get. `sudo dpkg-reconfigure
-blessh-server` prints it again. Show the fingerprint alone with
+The server starts right away and at every boot; the installer prints a
+table of checks and the host key fingerprint. Details:
+[docs/linux.md](docs/linux.md).
+
+# Usage
 
 ```
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+blessh scan                          # servers in range
+blessh alice@my-pi                   # connect by the advertised name
+blessh -L 8080:localhost:80 my-pi    # any ssh option or command
 ```
 
-Settings go into `/etc/default/blessh` as `BLESSH_ARGS`: `--name` (the
-advertised name, default: the static host name from `/etc/hostname`, which
-neither DHCP nor avahi's renames on mDNS conflicts change), `--adapter`, `--max-sessions`
-(default 4; `MaxConnections` in `blessh-session.socket` must allow as
-many), `--no-l2cap` (serve the GATT stream only); `blessh-server --help`
-lists them all. Restart the service after a change.
-
-### SSH settings
-
-BLE sessions run `sshd -i -f /etc/blessh/sshd_config`, and that file only
-includes `/etc/ssh/sshd_config`: the system SSH server's settings and host
-keys apply, with its `sshd_config.d` drop-ins. `ssh.service` itself may stay
-disabled. Settings meant for BLE sessions only go above the `Include` line
-in `/etc/blessh/sshd_config` (sshd uses the first value it reads). sshd
-sees no source address for BLE clients, so `Match Address` blocks do not
-apply to them. Show what BLE sessions get:
-
-```
-sudo sshd -T -f /etc/blessh/sshd_config
-```
-
-Logs: `journalctl -u blessh-server -u 'blessh-session@*'`.
-
-Audit: every session gets a random id. `blessh-server.service` logs it with
-the client's BLE address and the transport (`l2cap` or `gatt`) when the
-session starts, and with duration, byte counts and how it ended when it is
-over. The session's `blessh-session@…` unit logs the same id, address and
-transport, followed by sshd's login lines. Note that phones use private BLE
-addresses that change every few minutes, so the address identifies a
-connection rather than a phone.
-
-Upgrades restart the daemon, which ends the active BLE sessions.
-
-BLE logins are possible while `blessh-server.service` and
-`blessh-session.socket` run. Stop until the next boot:
-`sudo systemctl stop blessh-server.service`. Disable:
-`sudo systemctl disable --now blessh-server.service blessh-session.socket`.
-Remove: `sudo apt purge blessh-server`.
-
-Requirements: BlueZ ≥ 5.55 (tested with 5.66, 5.72 and 5.82), a kernel
-with LE L2CAP connection-oriented channels (any current one; before Linux
-6.10 the kernel grants receive credits without regard to the socket
-buffer, which only matters when sshd stops reading), the OpenSSH server
-package (only the `sshd` binary is used), systemd. The Bluetooth adapter
-must be on; the daemon waits for it and logs what to do if it is blocked
-by rfkill (`sudo rfkill unblock bluetooth`) or powered off
-(`bluetoothctl power on`). The package does not change the rfkill state.
-
-`blessh-server.service` starts with `bluetooth.target` and, for boots where
-that target does not come up (a systemd soft-reboot, where the adapter is
-already there), with `multi-user.target`; it then starts bluetoothd through
-D-Bus activation if `bluetooth.service` is enabled.
-
-### Desktop systems
-
-Desktop Bluetooth settings (KDE, GNOME, blueman) switch the adapter off or
-block it with rfkill, and restore that state at login; blessh then waits
-until Bluetooth is on again. Some desktops record "off" by mistake when the
-system shuts down, because bluetoothd stops before the desktop session; the
-adapter is then off after every reboot. Fix it in the desktop settings
-(KDE: Bluetooth, "When logging in": enable Bluetooth) or in the system
-(`After=bluetooth.service` for `user@.service`, so sessions stop first).
-
-## Connect from Linux
-
-Install `blessh-client_<version>_<arch>.deb` (it needs BlueZ and the
-OpenSSH client), then:
-
-```
-blessh scan                        # servers in range: address, name, RSSI
-blessh alice@my-pi                 # by the advertised name
-blessh alice@AA:BB:CC:DD:EE:FF     # by Bluetooth address
-blessh -p 22 -L 8080:localhost:80 alice@my-pi   # any ssh option or command
-```
-
-`blessh` runs the system ssh with a ProxyCommand of `blessh proxy` and a
-HostKeyAlias (`blessh-<name>` or `blessh-<address>`), so the server's host
-key is pinned under that name in `~/.ssh/known_hosts`; compare the
-fingerprint on the first connection. It also turns on ssh compression
-(`-o Compression=no` turns it off) and, without `user@` or `-l`, logs in
-as the current user, like ssh does. One line before the session says which
-transport is in use: `blessh: my-pi AA:BB:CC:DD:EE:FF: l2cap, mtu 1024`, or
-`gatt, frame 497` with a server that offers no channel. `BLESSH_PROXY_ARGS`
-passes options to the proxy, for example `--adapter hci1` or `--gatt`;
-`blessh proxy --help` lists them. The same works from `ssh_config`:
+`blessh` runs the system ssh, so every ssh feature works. The server's
+host key is pinned as `blessh-<name>` in `~/.ssh/known_hosts`: compare its
+fingerprint on the first connection. Without a user, `blessh` logs in as
+the current one. The same from `ssh_config`:
 
 ```
 Host my-pi
@@ -159,148 +85,36 @@ Host my-pi
     HostKeyAlias blessh-my-pi
 ```
 
-Several sessions to one server share its BLE link; the last `blessh` to
-exit disconnects it. If no server has the name given, the error lists the
-names of the servers in range. A server can offer several L2CAP channels;
-`blessh` checks each with a short handshake before SSH starts, falls back
-to the next one (and to the GATT stream) when a channel stalls, and
-remembers in `~/.cache/blessh/` which one worked for each server.
+More: [docs/client.md](docs/client.md).
 
-The client machine needs no settings for the L2CAP channel. The GATT
-stream (servers run with `--no-l2cap`, or `--gatt`) needs EATT off on the
-client as well (`Channels = 1` in the `[GATT]` section of
-`/etc/bluetooth/main.conf`, the default since BlueZ 5.67); `blessh` warns
-if it is on.
+# Settings
 
-The client makes the LE link itself and reads INFO over its own ATT
-channel, so the client machine's bluetoothd neither connects over BR/EDR
-(to a Mac, for example) nor discovers and probes the server's services.
-That matters when the server also publishes a GATT service that requires
-encryption, such as BLE MIDI from PipeWire's WirePlumber: bluetoothd's MIDI
-plugin would read it and ask to pair, and the link would drop. The GATT
-stream still goes through bluetoothd; for it, turn off BLE MIDI in
-WirePlumber on the server, or start the client's bluetoothd without the
-MIDI plugin (`-P midi`).
+| What | Linux | macOS |
+|---|---|---|
+| Server name | `/etc/hostname`, or `--name` in `/etc/default/blessh` | the computer's name, or `/etc/blessh/name` |
+| SSH settings for BLE only | above the `Include` in `/etc/blessh/sshd_config` | same |
+| Server options | `BLESSH_ARGS` in `/etc/default/blessh` | — |
+| Server state | `blessh server status` | `blessh server status` |
+| Server log | `journalctl -u blessh-server -u 'blessh-session@*'` | `$(brew --prefix)/var/log/blessh.log` |
+| Client cache | `~/.cache/blessh/` | `~/.cache/blessh/` |
 
-## macOS
+# Documentation
 
-The macOS build (`blessh-<version>-macos-arm64.tar.gz` on the Releases
-page) has the same client and a server on CoreBluetooth; both use the
-L2CAP channel (the GATT stream is not available on macOS yet, so the
-server needs clients with L2CAP: Linux, macOS, Android 10 and later, iOS).
-Unpack and run `sudo ./install.sh` (client and server), `sudo ./install.sh
-client` or `sudo ./install.sh server` from the account that should serve
-BLE sessions: the BLE server runs as that user through a LaunchAgent, because
-macOS grants Bluetooth to logged-in users only, and `sshd -i` runs as root
-through a LaunchDaemon with `inetdCompatibility`, like Apple's own ssh job.
-`/etc/blessh/sshd_config` includes the system `sshd_config`; Remote Login
-does not have to be on. Sessions are logged in `/tmp/blessh-server.log`
-and `/var/log/blessh-session.log`. `sudo ./uninstall.sh [client|server]`
-removes them.
+* [docs/linux.md](docs/linux.md): packages, server settings, logs and
+  audit, requirements, desktop systems, Bookworm.
+* [docs/macos-server.md](docs/macos-server.md): the macOS server, and why
+  it reaches sshd the way it does.
+* [docs/client.md](docs/client.md): the `blessh` command, transports,
+  server names, platform notes.
+* [docs/SECURITY.md](docs/SECURITY.md): recommendations, threat model,
+  reporting vulnerabilities.
+* [docs/architecture.md](docs/architecture.md),
+  [docs/protocol.md](docs/protocol.md),
+  [docs/compatibility.md](docs/compatibility.md): design and wire
+  protocol.
+* [docs/development.md](docs/development.md),
+  [docs/testing.md](docs/testing.md): building, testing, releasing.
 
-The first use of Bluetooth makes macOS ask, on the Mac's screen, whether
-`blessh` (and, for the server, `blessh-server`) may use it. The permission
-belongs to blessh itself, not to the terminal or to sshd: `blessh` runs
-itself again as its own "responsible process", so it also works when
-started over SSH or from scripts once granted. Until it is granted,
-`blessh` and `blessh-server` report "macOS has not decided whether this
-program may use Bluetooth". macOS shows no Bluetooth addresses: `blessh scan` lists
-CoreBluetooth's device identifiers instead, and `blessh user@<name>`
-selects by advertised name. The server is only reachable while the user
-is logged in.
+# License
 
-The server advertises the computer's HostName if one is set, else its
-ComputerName (System Settings, General, About, Name), read at every start.
-The " (2)" that macOS appends to the ComputerName when another computer on
-the network has the same name is dropped, so such renames do not change the
-server's name; LocalHostName and the name DHCP hands out are not used.
-`/etc/blessh/name` or `--name` sets another name.
-
-The macOS client also remembers which device had each server name
-(`~/.cache/blessh/devices`): if a short scan does not find the name, it
-connects to that device directly, since a server may not advertise right
-after a previous session's link went down.
-
-Server names follow host name rules: letters, digits and hyphens, parts
-separated by dots, at most 29 bytes (what fits the advertisement), compared
-without regard to case. Defaults are derived accordingly: the first part of
-a host name, other characters replaced by hyphens.
-
-## Security
-
-Anyone within Bluetooth range can connect to the server and try to log in;
-the BLE link is neither paired nor encrypted, and SSH provides
-authentication and encryption. Recommended:
-
-* Compare the host key fingerprint on the first connection.
-* Log in with public keys only: turn passwords off
-  (`PasswordAuthentication no`, `KbdInteractiveAuthentication no` in the
-  system SSH configuration; this applies to BLE too). Anyone in radio range
-  can try passwords, in up to `--max-sessions` sessions at once, and sshd
-  cannot rate-limit BLE clients by source (docs/SECURITY.md, S-4).
-* Limit who may log in over BLE only with `AllowGroups` above the
-  `Include` line in `/etc/blessh/sshd_config`.
-* Use BlueZ 5.76 or later (Debian trixie) where the GATT stream is in use.
-  With older BlueZ, other BLE devices nearby can break an active GATT
-  session or observe its encrypted traffic and keystroke timing; the
-  installer warns about this. L2CAP channels are not affected.
-
-Threat model, findings and checks: [docs/SECURITY.md](docs/SECURITY.md).
-
-## Bookworm (BlueZ 5.66): EATT and pairing requests
-
-BlueZ before 5.67 enables EATT (several ATT channels per connection,
-`Channels = 3`) by default. When a phone connects, bluetoothd opens an extra
-EATT channel to it; the phone accepts EATT only on an encrypted link, so
-bluetoothd asks the phone to pair. blessh does not use pairing. Cancel or
-no answer drops the connection (no answer: after 30 s); accepting fails
-("pairing rejected") but the session survives, and the request returns once
-the phone changes its random address. BlueZ 5.67 stopped opening EATT to
-devices that connected on their own and turned EATT off by default, so
-Debian 13 and later are not affected, whatever `Channels` says.
-
-blessh handles this itself. On BlueZ before 5.67, `blessh-server.service`
-first runs `/usr/lib/blessh/eatt-off`, which turns off the kernel's
-enhanced credit based L2CAP mode (ECRED, the `enable_ecred` parameter of
-the `bluetooth` module). EATT needs it, so bluetoothd's EATT attempt fails
-quietly and the phone is never asked to pair. The L2CAP channel uses the LE
-credit based mode, which ECRED does not affect. Neither bluez's
-configuration nor bluetoothd is touched; the journal of
-`blessh-server.service` says when this happens. Effects and limits:
-
-* Lasts until reboot and is renewed on every start of the service;
-  removing the package turns ECRED back on.
-* Applies to the whole system. On these BlueZ versions only EATT and the
-  experimental LE Audio support use ECRED.
-* An explicit `Channels` setting in the `[GATT]` section of
-  `/etc/bluetooth/main.conf` is left alone: `Channels = 1` already turns
-  EATT off; a larger value means the administrator wants EATT, and phones
-  will then be asked to pair.
-
-## Development
-
-```
-cargo test                              # protocol, relay and client unit tests
-cargo build && tests/e2e-loopback.sh    # ssh ↔ simulated BLE ↔ sshd -i, no radio needed
-tests/e2e-vhci.sh                       # both transports over BlueZ with btvirt (root; docs/testing.md)
-tests/docker/build-deb.sh               # the Debian packages, in a Debian container, into dist/
-tests/docker/test-package.sh            # install, configuration checks and purge in a clean Debian
-```
-
-The workspace builds on macOS as well (the platform modules are stubs there
-for now), so `cargo check` and the core tests work without BlueZ.
-
-Releases: set `version` in the workspace `Cargo.toml`, commit, then push a
-matching tag (`git tag blessh-v0.1.0 && git push origin blessh-v0.1.0`). CI
-builds the packages and publishes a release with `SHA256SUMS` and the
-commit subjects since the previous tag. Untagged CI builds are versioned
-`X.Y.Z~ciN`, which sorts before the `X.Y.Z` release.
-
-`blessh-loopback` runs both ends of the GATT stream over a simulated link
-(small MTU, packet reordering) and is what the loopback test uses.
-
-Without CI, `ci/local/build.sh blessh-vX.Y.Z` runs the same checks and
-builds the same packages in docker on any Linux host, and writes the
-release notes next to them; publish with `gh release create
-blessh-vX.Y.Z <out>/*.deb <out>/SHA256SUMS --title "blessh X.Y.Z"
---notes-file <out>/notes.md`.
+BSD 2-Clause, see [LICENSE](LICENSE).
