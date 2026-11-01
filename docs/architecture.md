@@ -137,7 +137,9 @@ feature works unchanged.
   Thirty seconds after the last channel of a link closes, the server
   disconnects it unless a new channel opened or the client read INFO
   meanwhile (clients read it before opening a channel); controllers that
-  cannot advertise while connected become visible again that way.
+  cannot advertise while connected become visible again that way. A link
+  the client closes itself ends its grace period; phones keep their
+  address across links, so the timer must not reach the next one.
 * Every session has a random 64-bit id, logged by the daemon with the
   device address, the transport and, at the end, duration, byte counts and
   the reason; the session helper logs the same id before sshd's lines

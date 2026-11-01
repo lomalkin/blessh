@@ -43,37 +43,17 @@ rework (2026-10).
 ## Links
 
 * The Linux server drops a link thirty seconds after its last channel
-  closed unless the client read INFO meanwhile. A client that reconnects
-  within the seconds the disconnect takes to reach the radio (up to three
-  on a Pi Zero 2 W) still loses its new session; with ten seconds this hit
-  clients that came back right away, thirty moves it past the usual
-  reconnect. Closing the gap needs a way to
-  cancel or hold the disconnect, or the client retrying a channel cut
-  right after the handshake.
-  To reproduce: a Pi Zero 2 W server, a client that keeps the link
-  between sessions (ConnectBot blessh); end a session, wait, and start
-  the next one on the same link, stepping the wait from 29 to 33 s in
-  half seconds. A hit shows in the server's journal as
-  `no channel for 30s, disconnecting` and, within about three seconds,
-  the new session ending with `link closed on this side`; the app
-  reports a lost connection. With 0.2.4 (ten seconds) the app's own
-  reconnect hit it without any timing.
-* An Android phone that reconnects to a Pi Zero 2 W server while the
-  previous link is still up (the server keeps it thirty seconds) fails
-  about one session in three: service discovery on the old link hangs
-  for ten seconds, the client retries correctly, reads INFO and opens
-  the channel just as the server's grace timer, decided a moment
-  before, drops the link. Ideas: the server holds the disconnect while
-  bluetoothd shows GATT activity; the client retries a channel that dies
-  before SSH authentication; the app disconnects the link on exit.
-  To reproduce (ConnectBot blessh r3, server 0.2.5): open
-  `blessh://user@<server>`, log in, `exit`, then
-  `adb shell am force-stop io.github.lomalkin.connectbot.blessh` (the
-  link outlives the app) and open the same URI again at once; repeat
-  five times. Failures show in logcat as `Bluetooth service discovery
-  timed out` followed by `the server closed the channel`, and in the
-  server's journal as the grace disconnect above. Servers with faster
-  controllers (Pi 3 B+, macOS) passed every run.
+  closed unless the client read INFO meanwhile. A client that opens a
+  channel on that link within the seconds the disconnect takes to reach
+  the radio (up to three on a Pi Zero 2 W) still loses its new session.
+  Clients rarely keep an idle link that long (ConnectBot blessh closes
+  it when its session ends). Closing the gap needs a way to
+  cancel or hold the disconnect. To reproduce: a client that keeps the
+  link idle (`bluetoothctl connect` plus a script that reads INFO and
+  opens a channel), opening the channel 29 to 33 s after the previous
+  one closed, in half-second steps; a hit shows in the server's journal
+  as `no channel for 30s, disconnecting` followed within seconds by the
+  new session ending with `link closed on this side`.
 * The Linux client that joins a link another blessh made takes the PSMs
   from the lock file and reads no INFO; it should read INFO too
   (protocol.md, "Lifetime").

@@ -195,7 +195,9 @@ down; the server then ends sshd's session (EOF, SIGHUP). A client may open
 several channels on one link, one session each. The server does not
 disconnect a link that carries a channel; thirty seconds after the last
 channel on a link closed, it may disconnect the link unless a new channel
-opened or the client read INFO meanwhile. A client that reuses a link
+opened or the client read INFO meanwhile. The period belongs to that
+link: once it is down, it does not touch the client's next link, even
+from the same address. A client that reuses a link
 SHOULD read INFO before it opens its channel, so that the link is not
 taken down under it. Linux reports a peer's close or a lost link on an L2CAP
 socket as an error (`ECONNRESET`, `ECONNABORTED`, `ETIMEDOUT`), not as
