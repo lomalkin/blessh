@@ -74,10 +74,30 @@ Repository secrets used by the release:
 | Secret | Use |
 |---|---|
 | `HOMEBREW_TAP_DEPLOY_KEY` | deploy key with write access to the tap `lomalkin/homebrew-tap`; the release commits the rendered formula there |
-| `BLESSH_SIGN_P12`, `BLESSH_SIGN_P12_PASSWORD` | base64 of a PKCS#12 file with the "blessh local signing" identity, and its password; the macOS program is signed with it |
+| `BLESSH_SIGN_P12`, `BLESSH_SIGN_P12_PASSWORD` | base64 of a PKCS#12 file with one code signing identity, and its password; the macOS program is signed with it |
 
 Without them the release still happens: the formula is not published and
 the program is signed ad hoc.
+
+The signing identity can be self-signed: macOS keys the Bluetooth
+permission to the program's identifier and certificate, not to a trusted
+chain, so the same certificate in every release keeps the permission
+across upgrades. Make one with the system's openssl (LibreSSL; OpenSSL 3
+writes PKCS#12 files that `security import` rejects):
+
+```
+umask 077; d=$(mktemp -d); cd "$d"
+printf '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=blessh signing\n[ext]\nbasicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=critical,codeSigning\nsubjectKeyIdentifier=hash\n' > cert.cnf
+/usr/bin/openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes -config cert.cnf -keyout key.pem -out cert.pem
+export pw=$(/usr/bin/openssl rand -base64 24)
+/usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem -name "blessh signing" -passout env:pw -out blessh-signing.p12
+base64 -i blessh-signing.p12 | gh secret set BLESSH_SIGN_P12 -R lomalkin/blessh
+printf '%s' "$pw" | gh secret set BLESSH_SIGN_P12_PASSWORD -R lomalkin/blessh
+```
+
+Keep `blessh-signing.p12` and its password in a password manager (a new
+certificate makes every Mac ask for the Bluetooth permission once more),
+then remove the directory.
 
 Without CI, `ci/local/build.sh blessh-vX.Y.Z` runs the same checks and
 builds the same Debian packages in docker on any x86_64 Linux host, and
