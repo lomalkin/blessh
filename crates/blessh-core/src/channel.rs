@@ -402,6 +402,26 @@ mod tests {
         assert_eq!(&echo, b"abcd");
     }
 
+    /// The test vectors of docs/protocol.md, "Channel handshake".
+    #[test]
+    fn wire_format_matches_the_protocol_test_vectors() {
+        let hex = |s: &str| -> Vec<u8> {
+            s.split_whitespace()
+                .map(|b| u8::from_str_radix(b, 16).unwrap())
+                .collect()
+        };
+        let mut hello = header(1, 0, 4, &[]);
+        hello.extend_from_slice(b"abcd");
+        assert_eq!(hello, hex("42 4c 53 48 01 00 04 00 00 00 61 62 63 64"));
+        let reply = header(1, ACCEPTED, 4, &[]);
+        assert_eq!(reply, hex("42 4c 53 48 01 00 04 00 00 00"));
+        let opts = encode_options(&vec![(OPT_REASON, b"busy".to_vec())]);
+        assert_eq!(
+            header(1, REFUSED, 0, &opts),
+            hex("42 4c 53 48 01 01 00 00 06 00 01 04 62 75 73 79")
+        );
+    }
+
     #[test]
     fn options_round_trip_and_reject_truncation() {
         let o = vec![(1, b"x".to_vec()), (9, vec![])];
