@@ -129,7 +129,9 @@ impl Sessions {
 /// channel opened or the device read INFO meanwhile (a client reads it
 /// before it opens a channel): the client may open the next one right away,
 /// and controllers that do not advertise while connected become visible
-/// again.
+/// again. The grace period belongs to the link: if the client ends it
+/// first, the timer stops, so that it cannot cut the client's next link
+/// (phones keep their address across links).
 struct ChannelGuard {
     sessions: Shared,
     addr: Address,
@@ -173,7 +175,12 @@ impl Drop for ChannelGuard {
         }
         let (sessions, adapter) = (self.sessions.clone(), self.adapter.clone());
         tokio::spawn(async move {
-            tokio::time::sleep(LINK_GRACE).await;
+            if tokio::time::timeout(LINK_GRACE, disconnected(&adapter, addr))
+                .await
+                .is_ok()
+            {
+                return;
+            }
             let s = sessions.lock().unwrap();
             let quiet = s
                 .last_activity
