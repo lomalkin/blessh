@@ -102,8 +102,10 @@ struct Sessions {
     per_device: HashMap<Address, usize>,
     /// L2CAP channels open per device, sessions or not (yet).
     channels: HashMap<Address, usize>,
-    /// When the last channel of a device closed.
-    last_close: HashMap<Address, Instant>,
+    /// When a device last did something that shows it still uses its
+    /// link: a channel closed, or it read INFO, which clients do before
+    /// they open a channel.
+    last_activity: HashMap<Address, Instant>,
 }
 
 type Shared = Arc<Mutex<Sessions>>;
@@ -124,7 +126,8 @@ impl Sessions {
 
 /// Counts an L2CAP channel from accept to close. When the last channel of
 /// a device closes, the link goes down after a grace period unless another
-/// channel opened meanwhile: the client may open the next one right away,
+/// channel opened or the device read INFO meanwhile (a client reads it
+/// before it opens a channel): the client may open the next one right away,
 /// and controllers that do not advertise while connected become visible
 /// again.
 struct ChannelGuard {
@@ -162,7 +165,7 @@ impl Drop for ChannelGuard {
             if idle {
                 s.channels.remove(&addr);
             }
-            s.last_close.insert(addr, Instant::now());
+            s.last_activity.insert(addr, Instant::now());
             idle
         };
         if !idle || *self.shutdown.borrow() {
@@ -173,7 +176,7 @@ impl Drop for ChannelGuard {
             tokio::time::sleep(LINK_GRACE).await;
             let s = sessions.lock().unwrap();
             let quiet = s
-                .last_close
+                .last_activity
                 .get(&addr)
                 .is_some_and(|t| t.elapsed() >= LINK_GRACE);
             if quiet && !s.channels.contains_key(&addr) && !s.has(addr) {
@@ -481,7 +484,8 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     // disconnects (5.82 to at least 5.87), and before 5.69 all devices share
     // one write socket, so a turned-away client must not get that far.
     let holder: Arc<std::sync::Mutex<Option<Address>>> = Arc::default();
-    let (info_holder, info_adapter) = (holder.clone(), adapter.clone());
+    let (info_holder, info_adapter, info_sessions) =
+        (holder.clone(), adapter.clone(), sessions.clone());
     let (rx_control, rx_handle) = characteristic_control();
     let (tx_control, tx_handle) = characteristic_control();
     let mut characteristics = vec![
@@ -490,6 +494,14 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
             read: Some(CharacteristicRead {
                 read: true,
                 fun: Box::new(move |req| {
+                    // A client reconnecting right after its previous session
+                    // reads INFO before it opens a channel: keep the link
+                    // from being dropped under it by the grace timer.
+                    info_sessions
+                        .lock()
+                        .unwrap()
+                        .last_activity
+                        .insert(req.device_address, Instant::now());
                     let holder = *info_holder.lock().unwrap();
                     let (adapter, name, psms) =
                         (info_adapter.clone(), info_name.clone(), info_psms.clone());
