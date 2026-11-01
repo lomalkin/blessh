@@ -150,31 +150,73 @@ jobs:
           apt-get update
           tests/e2e-package.sh dist/blessh-server_*.deb dist/blessh-client_*.deb
 
-  # macOS: client and server on CoreBluetooth, packaged as a tarball with
-  # the launchd jobs and an install script (packaging/macos).
+  # macOS: one universal program (client and server on CoreBluetooth) in a
+  # tarball, and the Homebrew formula that installs it (packaging/macos,
+  # packaging/homebrew). With the secrets BLESSH_SIGN_P12 (base64 of a
+  # PKCS#12 file with the "blessh local signing" identity) and
+  # BLESSH_SIGN_P12_PASSWORD the program is signed with that identity, so
+  # that macOS keeps the Bluetooth permission across updates; otherwise it
+  # is signed ad hoc.
   macos:
     runs-on: macos-14
+    env:
+      HAS_SIGN_KEY: ${{ secrets.BLESSH_SIGN_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: cargo build --release
+      - name: Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Unit tests
         run: cargo test
+      - name: Signing identity
+        if: env.HAS_SIGN_KEY == 'true'
+        env:
+          P12: ${{ secrets.BLESSH_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.BLESSH_SIGN_P12_PASSWORD }}
+        run: |
+          kc=$RUNNER_TEMP/signing.keychain-db
+          printf '%s' "$P12" | base64 -d > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p ci "$kc"
+          security set-keychain-settings "$kc"
+          security unlock-keychain -p ci "$kc"
+          security import "$RUNNER_TEMP/signing.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$kc" > /dev/null
+          security list-keychains -d user | tr -d '"' | xargs security list-keychains -d user -s "$kc"
+          rm "$RUNNER_TEMP/signing.p12"
+          echo "BLESSH_SIGN_IDENTITY=blessh local signing" >> "$GITHUB_ENV"
       - name: Tarball
         run: packaging/macos/build-tarball.sh
+      - name: Check the program
+        run: |
+          bin=$(ls dist/blessh-*-macos/blessh)
+          lipo -archs "$bin"
+          codesign -dvv "$bin" 2>&1 | grep -E 'Identifier|Signature|Authority' || true
+          "$bin" --version
+      - name: Homebrew formula
+        run: |
+          mkdir -p dist/homebrew
+          packaging/homebrew/render.sh blessh dist/*.tar.gz > dist/homebrew/blessh.rb
+          cat dist/homebrew/blessh.rb
       - uses: actions/upload-artifact@v4
         with:
-          name: blessh-macos-arm64
-          path: dist/*.tar.gz
+          name: blessh-macos
+          path: |
+            dist/*.tar.gz
+            dist/homebrew/*.rb
 
   # A tag blessh-vX.Y.Z publishes a GitHub release with the packages,
-  # SHA256SUMS and the commit subjects since the previous blessh tag.
+  # SHA256SUMS and the commit subjects since the previous blessh tag, then
+  # commits the Homebrew formula to the tap when the secret
+  # HOMEBREW_TAP_DEPLOY_KEY (a deploy key of the tap with write access)
+  # is set.
   release:
     if: github.ref_type == 'tag'
     needs: [test, deps, fuzz-smoke, deb, package, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAP: lomalkin/homebrew-tap
+      HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -186,6 +228,7 @@ jobs:
           path: dist
       - name: Checksums and notes
         run: |
+          mv dist/homebrew homebrew
           cd dist
           sha256sum *.deb *.tar.gz > SHA256SUMS
           cat SHA256SUMS
@@ -203,3 +246,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "blessh ${GITHUB_REF_NAME#blessh-v}" --notes-file notes.md
+      - name: Update the Homebrew tap
+        if: env.HAS_TAP_KEY == 'true'
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$TAP_KEY" > ~/.ssh/tap
+          chmod 600 ~/.ssh/tap
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone "git@github.com:$TAP.git" tap
+          mkdir -p tap/Formula
+          cp homebrew/*.rb tap/Formula/
+          cd tap
+          git add Formula
+          git -c user.name="blessh release" -c user.email="noreply@github.com" \
+              commit -m "${GITHUB_REF_NAME#blessh-v}"
+          git push origin HEAD

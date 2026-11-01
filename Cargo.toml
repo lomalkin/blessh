@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.79"
 license = "BSD-2-Clause"
@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 blessh-core = { path = "crates/blessh-core" }
 blessh-ble = { path = "crates/blessh-ble" }
+blessh-server = { path = "crates/blessh-server" }
 bluer = { version = "0.17.4", features = ["bluetoothd", "l2cap"] }
 # Build libdbus from source so the binaries need neither libdbus-1-dev at build
 # time nor a matching libdbus at run time (simplifies cross-compilation).

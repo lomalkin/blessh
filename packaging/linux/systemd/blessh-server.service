@@ -11,7 +11,7 @@ Type=simple
 EnvironmentFile=-/etc/default/blessh
 # As root ("+"): keeps BlueZ < 5.67 from asking phones to pair.
 ExecStartPre=+/usr/lib/blessh/eatt-off
-ExecStart=/usr/sbin/blessh-server $BLESSH_ARGS
+ExecStart=/usr/bin/blessh server run $BLESSH_ARGS
 User=_blessh
 Group=_blessh
 SupplementaryGroups=bluetooth

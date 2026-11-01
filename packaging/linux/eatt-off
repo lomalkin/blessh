@@ -1,5 +1,5 @@
 #!/bin/sh
-# Keeps BlueZ before 5.67 from opening EATT to phones (README, "Bookworm").
+# Keeps BlueZ before 5.67 from opening EATT to phones (docs/linux.md, "Bookworm").
 #
 # Those versions default to Channels = 3: after a phone connects,
 # bluetoothd opens an EATT channel to it, the phone refuses it on an

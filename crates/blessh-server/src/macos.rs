@@ -1,12 +1,13 @@
-//! macOS server: CoreBluetooth through blessh-ble. Runs in the user's
-//! session (macOS grants Bluetooth to logged-in users, not to daemons).
-//! Every L2CAP channel becomes one connection to the launchd session
-//! socket, where sshd runs as root, or one run of a command for tests.
+//! `blessh server run` on macOS: CoreBluetooth through blessh-ble. Runs in
+//! the user's session (macOS grants Bluetooth to logged-in users, not to
+//! daemons), started by `brew services`. Every L2CAP channel becomes one
+//! TCP connection to the localhost sshd job that `blessh server enable`
+//! installs (docs/macos-server.md), or one run of a command for tests.
 
 use std::{
     error::Error,
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -22,19 +23,19 @@ use blessh_ble::corebluetooth::{
 use blessh_core::{
     channel, logging, name,
     relay::{self, End},
-    session::{self, Preamble},
+    session,
 };
 use clap::Parser;
 use log::{error, info, warn};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    net::UnixStream,
+    net::TcpStream,
     sync::{mpsc, oneshot, watch},
 };
 
 #[derive(Parser, Debug, Clone)]
 #[command(version, about = "SSH over Bluetooth LE: CoreBluetooth server")]
-struct Args {
+pub(crate) struct Args {
     /// Advertised name, by host name rules (default: from --name-file,
     /// else the computer's HostName or ComputerName, read at every start;
     /// the " (2)" macOS appends to a ComputerName on a network conflict is
@@ -48,9 +49,9 @@ struct Args {
     /// Print the name the server would advertise and exit.
     #[arg(long)]
     print_name: bool,
-    /// Stream socket that starts a session for every connection (launchd).
-    #[arg(long, default_value = "/var/run/blessh-session.sock")]
-    session_socket: PathBuf,
+    /// Port of the sshd job on 127.0.0.1 (`blessh server enable`).
+    #[arg(long, default_value_t = SSHD_PORT)]
+    sshd_port: u16,
     /// Run this command for every session instead of using the socket; its
     /// stdin and stdout carry the session (for tests: `sshd -i -f config`).
     #[arg(long)]
@@ -67,46 +68,57 @@ struct Args {
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long Bluetooth may take to come up and the service to register.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
+/// Port of the localhost sshd job.
+pub(crate) const SSHD_PORT: u16 = 22022;
+/// The name file read when no --name is given.
+pub(crate) const NAME_FILE: &str = "/etc/blessh/name";
+/// How often the server looks whether its program was replaced.
+const UPDATE_CHECK: Duration = Duration::from_secs(10);
 
-pub fn main() {
+pub fn main(argv: Vec<String>) -> i32 {
     logging::init("info");
-    let args = Args::parse();
-    let name = match server_name(&args) {
+    let args = Args::parse_from(argv);
+    let name = match server_name(args.name.as_deref(), &args.name_file) {
         Ok(n) => n,
         Err(e) => {
             error!("{e}");
-            std::process::exit(2);
+            return 2;
         }
     };
     if args.print_name {
         println!("{name}");
-        return;
+        return 0;
     }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    if let Err(e) = rt.block_on(serve(args, name)) {
-        error!("{e}");
-        std::process::exit(1);
-    }
+    let code = match rt.block_on(serve(args, name)) {
+        Ok(()) => 0,
+        Err(e) => {
+            error!("{e}");
+            1
+        }
+    };
+    rt.shutdown_background();
+    code
 }
 
 /// The name to advertise: `--name`, else the name file, else one derived
 /// from the computer's names.
-fn server_name(args: &Args) -> Result<String, String> {
-    if let Some(n) = &args.name {
+pub(crate) fn server_name(given: Option<&str>, name_file: &Path) -> Result<String, String> {
+    if let Some(n) = given {
         name::check(n).map_err(|e| format!("--name {n:?}: {e}"))?;
-        return Ok(n.clone());
+        return Ok(n.to_owned());
     }
-    match std::fs::read_to_string(&args.name_file) {
+    match std::fs::read_to_string(name_file) {
         Ok(s) => {
             let n = s.trim();
-            name::check(n).map_err(|e| format!("{}: {n:?}: {e}", args.name_file.display()))?;
+            name::check(n).map_err(|e| format!("{}: {n:?}: {e}", name_file.display()))?;
             return Ok(n.to_owned());
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", args.name_file.display())),
+        Err(e) => return Err(format!("{}: {e}", name_file.display())),
     }
     ["HostName", "ComputerName", "LocalHostName"]
         .iter()
@@ -144,6 +156,14 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn Error>> {
         Ok(k) => info!("SSH host key: {}", k.trim()),
         Err(e) => warn!("cannot read host key {}: {e}", args.host_key.display()),
     }
+    if args.session_command.is_none() && !Path::new(crate::macos_admin::DAEMON_PLIST).exists() {
+        warn!(
+            "the sshd job is not installed ({}): sessions are refused until \
+             `blessh server enable` installs it",
+            crate::macos_admin::DAEMON_PLIST
+        );
+    }
+    let program = Program::now();
     let (sessions_tx, mut sessions_rx) = mpsc::channel::<io::Result<Session>>(8);
     let (ready_tx, ready_rx) = oneshot::channel::<io::Result<u16>>();
     let advertised = name.clone();
@@ -173,10 +193,19 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn Error>> {
     let count = Arc::new(AtomicUsize::new(0));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut update_check = tokio::time::interval(UPDATE_CHECK);
     loop {
         tokio::select! {
             _ = sigterm.recv() => break,
             _ = tokio::signal::ctrl_c() => break,
+            _ = update_check.tick() => {
+                // After an upgrade the service runs the old program until it
+                // restarts; restart (launchd's KeepAlive) once idle.
+                if count.load(Ordering::SeqCst) == 0 && program.as_ref().is_some_and(Program::replaced) {
+                    info!("the program was updated; restarting");
+                    break;
+                }
+            }
             next = sessions_rx.recv() => match next {
                 Some(Ok(session)) => {
                     tokio::spawn(run_session(session, args.clone(), count.clone(), shutdown_rx.clone()));
@@ -198,13 +227,36 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 type Local = Box<dyn Stream>;
 
-/// The session's local end: the session socket (with the preamble) or a
-/// command's stdio. The child, if any, is returned so that it lives as long
-/// as the session.
-async fn local_end(
-    args: &Args,
-    preamble: &Preamble,
-) -> io::Result<(Local, Option<tokio::process::Child>)> {
+/// The program this server runs from, to notice an upgrade: the path it was
+/// started as (Homebrew's `opt/blessh/bin/blessh`, a link into the current
+/// version) and the file that path resolves to.
+struct Program {
+    path: PathBuf,
+    file: (u64, u64),
+}
+
+impl Program {
+    fn now() -> Option<Self> {
+        let path = PathBuf::from(std::env::args_os().next()?);
+        let file = Self::identity(&path)?;
+        Some(Self { path, file })
+    }
+
+    fn identity(path: &Path) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path).ok()?;
+        Some((m.dev(), m.ino()))
+    }
+
+    fn replaced(&self) -> bool {
+        Self::identity(&self.path).is_some_and(|f| f != self.file)
+    }
+}
+
+/// The session's local end: a TCP connection to the localhost sshd job,
+/// or a command's stdio. The child, if any, is returned so that it lives
+/// as long as the session.
+async fn local_end(args: &Args, tag: &str) -> io::Result<(Local, Option<tokio::process::Child>)> {
     if let Some(cmd) = &args.session_command {
         let mut child = tokio::process::Command::new("/bin/sh")
             .arg("-c")
@@ -216,8 +268,11 @@ async fn local_end(
         let stdio = tokio::io::join(child.stdout.take().unwrap(), child.stdin.take().unwrap());
         return Ok((Box::new(stdio), Some(child)));
     }
-    let mut s = UnixStream::connect(&args.session_socket).await?;
-    s.write_all(preamble.encode().as_bytes()).await?;
+    let s = TcpStream::connect(("127.0.0.1", args.sshd_port)).await?;
+    // sshd logs this port: it joins the session to sshd's lines.
+    if let Ok(a) = s.local_addr() {
+        info!("{tag}: to sshd from 127.0.0.1 port {}", a.port());
+    }
     Ok((Box::new(s), None))
 }
 
@@ -260,17 +315,19 @@ async fn run_session(
         let _ = stream.shutdown().await;
         return;
     }
-    let preamble = Preamble {
-        id: id.clone(),
-        device: central.clone(),
-        address_type: "unknown".into(),
-        transport: "l2cap".into(),
-    };
-    let (local, _child) = match local_end(&args, &preamble).await {
+    let (local, _child) = match local_end(&args, &format!("{central}: session {id}")).await {
         Ok(l) => l,
         Err(e) => {
-            error!("{central}: session {id}: cannot start session: {e}");
-            let _ = channel::refuse(&mut stream, &hello, "session unavailable").await;
+            let reason = if e.kind() == io::ErrorKind::ConnectionRefused {
+                "SSH is not enabled on this Mac (blessh server enable)"
+            } else {
+                "session unavailable"
+            };
+            error!(
+                "{central}: session {id}: cannot reach sshd on 127.0.0.1 port {}: {e}",
+                args.sshd_port
+            );
+            let _ = channel::refuse(&mut stream, &hello, reason).await;
             let _ = stream.shutdown().await;
             count.fetch_sub(1, Ordering::SeqCst);
             return;

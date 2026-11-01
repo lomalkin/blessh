@@ -15,4 +15,7 @@
 # Show the settings BLE sessions get:
 #   sudo sshd -T -f /etc/blessh/sshd_config
 
+# Tells the session that it came over BLE.
+SetEnv BLESSH=1
+
 Include /etc/ssh/sshd_config

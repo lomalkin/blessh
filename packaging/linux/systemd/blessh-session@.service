@@ -6,9 +6,9 @@ Documentation=file:///usr/share/doc/blessh-server/README.md
 # ssh.service: the network SSH server may stay disabled.
 
 [Service]
-# blessh-session logs the session id and BLE device sent by the daemon,
+# `blessh server session` logs the session id and BLE device sent by the daemon,
 # then execs sshd; both end up in the journal of this unit.
-ExecStart=-/usr/lib/blessh/blessh-session -- /usr/sbin/sshd -i -f /etc/blessh/sshd_config
+ExecStart=-/usr/bin/blessh server session -- /usr/sbin/sshd -i -f /etc/blessh/sshd_config
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

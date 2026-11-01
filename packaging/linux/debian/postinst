@@ -26,7 +26,7 @@ check_bluez() {
 }
 
 # BlueZ before 5.67 enables EATT; /usr/lib/blessh/eatt-off turns it off
-# when blessh-server.service starts, unless main.conf sets Channels (README,
+# when blessh-server.service starts, unless main.conf sets Channels (docs/linux.md,
 # "Bookworm").
 check_eatt() {
     dpkg --compare-versions "$BLUEZ" lt 5.67 || return 0
@@ -108,7 +108,7 @@ summary() {
     BLESSH_ARGS=
     [ ! -r /etc/default/blessh ] || . /etc/default/blessh
     # shellcheck disable=SC2086
-    name=$(/usr/sbin/blessh-server $BLESSH_ARGS --print-name 2>&1 | tail -n 1)
+    name=$(/usr/bin/blessh server run $BLESSH_ARGS --print-name 2>&1 | tail -n 1)
     printf '  %-8s  %s\n' Name "$name (static host name, or --name in /etc/default/blessh)"
     if [ -f "$KEY" ]; then
         fp=$(ssh-keygen -l -f "$KEY" | awk '{ print $2 }')
@@ -133,10 +133,9 @@ summary() {
 # Printed on first installation only.
 commands() {
     echo
-    printf '  %-8s  %-8s  %s\n' Commands stop "sudo systemctl stop blessh-server"
-    printf '  %-8s  %-8s  %s\n' "" start "sudo systemctl start blessh-server"
-    printf '  %-8s  %-8s  %s\n' "" disable "sudo systemctl disable --now blessh-server blessh-session.socket"
-    printf '  %-8s  %-8s  %s\n' "" enable "sudo systemctl enable --now blessh-session.socket blessh-server"
+    printf '  %-8s  %-8s  %s\n' Commands status "blessh server status"
+    printf '  %-8s  %-8s  %s\n' "" disable "blessh server disable (stops it, also at boot)"
+    printf '  %-8s  %-8s  %s\n' "" enable "blessh server enable"
     printf '  %-8s  %-8s  %s\n' "" rename "BLESSH_ARGS=\"--name NAME\" in /etc/default/blessh, then restart"
 }
 

@@ -1,9 +1,10 @@
 #!/bin/sh
 # End-to-end test over real BlueZ with two virtual controllers (btvirt):
-# blessh-server serves on one adapter as an unprivileged user, blessh
+# `blessh server run` serves on one adapter as an unprivileged user, blessh
 # connects from the other as an OpenSSH ProxyCommand, over the L2CAP
 # channel and over the GATT stream. sshd is started per session by
-# systemd-socket-activate and blessh-session, mimicking blessh-session.socket.
+# systemd-socket-activate and `blessh server session`, mimicking
+# blessh-session.socket.
 #
 # Setup (root): modprobe hci_vhci; btvirt -L -l2. The virtual controllers
 # are hci0 and hci1 unless a real adapter holds an index; SERVER_HCI and
@@ -37,20 +38,20 @@ PidFile none
 LogLevel ERROR
 CFG
 
-systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/blessh-session" -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
+systemd-socket-activate -l "$T/session.sock" --inetd -a "$BIN/blessh" server session -- /usr/sbin/sshd -i -f "$T/sshd_config" -E "$T/sshd.log" \
     > "$T/socket-activate.log" 2>&1 &
 SA=$!
 DAEMON_ARGS="--adapter $SERVER_HCI --name vhci-server --session-socket $T/session.sock --host-key $T/hostkey.pub --max-sessions 2"
 if [ -n "${DAEMON_USER:-}" ]; then
-    cp "$BIN/blessh-server" "$T/"
+    cp "$BIN/blessh" "$T/"
     sleep 1
     chmod 666 "$T/session.sock"
     # shellcheck disable=SC2086
     sudo -u "$DAEMON_USER" env RUST_LOG=debug ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} \
-        "$T/blessh-server" $DAEMON_ARGS > "$T/daemon.log" 2>&1 &
+        "$T/blessh" server run $DAEMON_ARGS > "$T/daemon.log" 2>&1 &
 else
     # shellcheck disable=SC2086
-    RUST_LOG=debug "$BIN/blessh-server" $DAEMON_ARGS > "$T/daemon.log" 2>&1 &
+    RUST_LOG=debug "$BIN/blessh" server run $DAEMON_ARGS > "$T/daemon.log" 2>&1 &
 fi
 D=$!
 trap 'kill $D $SA 2>/dev/null || true' EXIT

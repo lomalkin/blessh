@@ -1,4 +1,4 @@
-# Extra arguments for blessh-server, see `blessh-server --help`.
+# Extra arguments for the server, see `blessh server run --help`.
 # Examples:
 #   BLESSH_ARGS="--name my-pi"
 #   BLESSH_ARGS="--adapter hci1"

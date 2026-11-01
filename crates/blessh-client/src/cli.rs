@@ -4,6 +4,7 @@
 //! blessh [ssh options] [user@]server [command]   run ssh over BLE
 //! blessh scan [options]                          list servers in range
 //! blessh proxy [options] <server>                relay stdin/stdout (ProxyCommand)
+//! blessh server <command>                        the server (crate blessh-server)
 //! ```
 //!
 //! The first form is the usual one: `server` is the name a server
@@ -18,6 +19,7 @@ pub const USAGE: &str = "\
 Usage: blessh [ssh options] [user@]server [command]
        blessh scan [options]
        blessh proxy [options] <server>
+       blessh server enable|disable|status|run
 
 Runs the system ssh over Bluetooth Low Energy: `server` is the name a
 blessh server advertises or its Bluetooth address (AA:BB:CC:DD:EE:FF).
@@ -26,6 +28,10 @@ Everything else is passed to ssh, together with a ProxyCommand that runs
 
 Environment: BLESSH_PROXY_ARGS adds options to `blessh proxy` (for example
 `--adapter hci1` or `--gatt`).
+
+`blessh server` serves this machine over BLE; `blessh server --help` says
+how. To reach a host named scan, proxy or server, give a user
+(`user@server`) or put `--` before it.
 
 `blessh scan --help` and `blessh proxy --help` list their options.";
 

@@ -1,20 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- LaunchDaemon: one sshd -i per connection to the session socket, like
-     Apple's own ssh.plist. blessh-session logs the session's preamble
-     (id, device, transport), then runs sshd with the system
-     configuration included from /etc/blessh/sshd_config, over a loopback
-     TCP connection (macOS's sshd needs a client address for its audit
-     session). -->
+<!-- LaunchDaemon installed by `blessh server enable`: like Apple's ssh.plist
+     (Remote Login), but listening on 127.0.0.1 only. launchd starts the
+     system's sshd for every connection, which the BLE server opens for
+     each session; sshd reads /etc/blessh/sshd_config, which includes the
+     system configuration. Nothing of blessh runs as root.
+     docs/macos-server.md explains the choice. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>org.blessh.session</string>
+	<string>org.blessh.sshd</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/libexec/blessh/blessh-session</string>
-		<string>--loopback</string>
-		<string>--</string>
 		<string>/usr/sbin/sshd</string>
 		<string>-i</string>
 		<string>-f</string>
@@ -24,12 +21,12 @@
 	<dict>
 		<key>Listeners</key>
 		<dict>
+			<key>SockNodeName</key>
+			<string>127.0.0.1</string>
+			<key>SockServiceName</key>
+			<string>@PORT@</string>
 			<key>SockFamily</key>
-			<string>Unix</string>
-			<key>SockPathName</key>
-			<string>/var/run/blessh-session.sock</string>
-			<key>SockPathMode</key>
-			<integer>438</integer>
+			<string>IPv4</string>
 		</dict>
 	</dict>
 	<key>inetdCompatibility</key>
@@ -38,6 +35,6 @@
 		<false/>
 	</dict>
 	<key>StandardErrorPath</key>
-	<string>/var/log/blessh-session.log</string>
+	<string>/dev/null</string>
 </dict>
 </plist>

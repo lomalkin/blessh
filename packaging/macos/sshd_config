@@ -1,13 +1,21 @@
 # sshd configuration for SSH sessions over Bluetooth LE on macOS.
 #
-# Each BLE session gets its own `sshd -i -f /etc/blessh/sshd_config` from
-# the org.blessh.session launchd job. All settings, including the host
-# keys, come from /etc/ssh/sshd_config, included below; Remote Login does
-# not have to be on. Settings placed above the Include apply to BLE
-# sessions only, for example:
+# `blessh server enable` installs the launchd job org.blessh.sshd, which
+# runs `/usr/sbin/sshd -i -f /etc/blessh/sshd_config` for every connection
+# the BLE server makes to 127.0.0.1 port 22022. All settings, including the
+# host keys, come from /etc/ssh/sshd_config, included below; Remote Login
+# does not have to be on.
+#
+# sshd uses the first value it reads for most keywords, so settings placed
+# above the Include apply to BLE sessions only and win over the system
+# configuration, for example:
 #AllowGroups blessh
-# BLE sessions reach sshd over a loopback TCP connection, so sshd logs them
-# as coming from 127.0.0.1 and `Match Address 127.0.0.1` blocks in the
-# system configuration apply to them.
+# BLE sessions come from 127.0.0.1, so `Match Address 127.0.0.1` blocks in
+# the system configuration apply to them.
+# Show the settings BLE sessions get:
+#   sudo sshd -T -f /etc/blessh/sshd_config
+
+# Tells the session that it came over BLE.
+SetEnv BLESSH=1
 
 Include /etc/ssh/sshd_config

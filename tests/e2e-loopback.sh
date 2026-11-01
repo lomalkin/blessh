@@ -2,7 +2,7 @@
 # End-to-end test without a radio: OpenSSH client -> blessh-loopback
 # (BleStream client and server over a simulated BLE link) -> unprivileged
 # `sshd -i`. The last round goes through a session socket and
-# blessh-session, as the packaged units do.
+# `blessh server session`, as the packaged units do.
 # Usage: tests/e2e-loopback.sh [path/to/blessh-loopback]
 set -eu
 
@@ -10,7 +10,7 @@ BIN=${1:-target/debug/blessh-loopback}
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
 SSHD=${SSHD:-/usr/sbin/sshd}
 T=$(mktemp -d)
-SESSION=$(dirname "$BIN")/blessh-session
+BLESSH=$(dirname "$BIN")/blessh
 SA=
 trap '[ -z "$SA" ] || kill $SA 2>/dev/null; rm -rf "$T"' EXIT
 
@@ -52,9 +52,9 @@ for cfg in "20 0" "20 5" "185 3" "512 0"; do
     tty=$(run "$1" "$2" -tt 'tty' < /dev/null 2>/dev/null | tr -d '\r')
     case $tty in /dev/pts/*) ;; *) echo "FAIL: no pty: $tty"; exit 1 ;; esac
 done
-echo "== session socket and blessh-session"
+echo "== session socket and blessh server session"
 systemd-socket-activate -l "$T/session.sock" --inetd -a \
-    "$SESSION" -- "$SSHD" -i -f "$T/sshd_config" -E "$T/sshd.log" > "$T/session.log" 2>&1 &
+    "$BLESSH" server session -- "$SSHD" -i -f "$T/sshd_config" -E "$T/sshd.log" > "$T/session.log" 2>&1 &
 SA=$!
 for _ in $(seq 50); do [ -S "$T/session.sock" ] && break; sleep 0.1; done
 out=$(timeout 60 ssh -F /dev/null -i "$T/id" -o IdentitiesOnly=yes -o BatchMode=yes \

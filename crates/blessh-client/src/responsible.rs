@@ -3,7 +3,7 @@
 //! rather than blessh. A process started over SSH then has no permission at
 //! all. blessh therefore runs itself again as its own responsible process,
 //! as terminals do for their shells, so that the permission is granted once
-//! to blessh (bundle identifier org.blessh.cli) and holds wherever it runs.
+//! to blessh (bundle identifier org.blessh) and holds wherever it runs.
 
 use std::{
     ffi::{CString, OsStr},

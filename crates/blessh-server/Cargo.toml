@@ -1,19 +1,15 @@
 [package]
 name = "blessh-server"
-description = "SSH sessions over Bluetooth Low Energy: server"
+description = "SSH sessions over Bluetooth Low Energy: server, run as `blessh server`"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[[bin]]
-name = "blessh-server"
-path = "src/main.rs"
-
-[[bin]]
-name = "blessh-session"
-path = "src/bin/blessh-session.rs"
+[lib]
+name = "blessh_server"
+path = "src/lib.rs"
 
 [dependencies]
 blessh-core = { workspace = true }
@@ -36,15 +32,15 @@ maintainer = "Aluminique"
 copyright = "2026, Aluminique"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-blessh exposes an SSH server over Bluetooth Low Energy. A small unprivileged \
-daemon registers a GATT service with BlueZ over D-Bus, listens on an L2CAP \
+blessh exposes an SSH server over Bluetooth Low Energy. An unprivileged \
+daemon (`blessh server run`, from the blessh-client package) registers a GATT service with BlueZ over D-Bus, listens on an L2CAP \
 connection-oriented channel and forwards each BLE session to a per-session \
 `sshd -i` started by systemd socket activation. No changes to the BlueZ \
 configuration are made and the adapter is not taken over, so other Bluetooth \
 services keep working. With BlueZ before 5.67 the kernel's ECRED L2CAP mode \
 is turned off while installed, which keeps EATT off as in later BlueZ \
 versions."""
-depends = "bluez (>= 5.55), openssh-server, systemd"
+depends = "blessh-client (>= 0.2.0~), bluez (>= 5.55), openssh-server, systemd"
 conflicts = "ble-term"
 replaces = "ble-term"
 section = "net"
@@ -52,8 +48,6 @@ priority = "optional"
 maintainer-scripts = "../../packaging/linux/debian/"
 conf-files = ["/etc/blessh/sshd_config", "/etc/default/blessh"]
 assets = [
-    ["target/release/blessh-server", "usr/sbin/", "755"],
-    ["target/release/blessh-session", "usr/lib/blessh/", "755"],
     ["../../packaging/linux/eatt-off", "usr/lib/blessh/", "755"],
     ["../../packaging/linux/sshd_config", "etc/blessh/sshd_config", "644"],
     ["../../packaging/linux/default", "etc/default/blessh", "644"],

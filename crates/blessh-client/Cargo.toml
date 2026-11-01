@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 blessh-core = { workspace = true }
 blessh-ble = { workspace = true }
+blessh-server = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 clap = { workspace = true }
@@ -35,7 +36,8 @@ extended-description = """\
 blessh connects to a blessh server over Bluetooth Low Energy and runs the \
 system ssh through it: `blessh user@server` with the server's advertised \
 name or Bluetooth address. It needs BlueZ; no pairing is involved, the SSH \
-host key and login provide the security."""
+host key and login provide the security. The same program is the server \
+(`blessh server run`), set up by the blessh-server package."""
 depends = "bluez (>= 5.55), openssh-client"
 section = "net"
 priority = "optional"

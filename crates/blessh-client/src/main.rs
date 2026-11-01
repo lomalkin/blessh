@@ -1,8 +1,9 @@
-//! blessh: SSH over Bluetooth Low Energy, desktop client.
+//! blessh: SSH over Bluetooth Low Energy, client and server in one program.
 //!
 //! `blessh [ssh options] [user@]server [command]` runs the system ssh with
 //! a ProxyCommand of `blessh proxy`, which relays the session over BLE;
-//! `blessh scan` lists servers in range. See `cli::USAGE`.
+//! `blessh scan` lists servers in range; `blessh server ...` is the server
+//! (crate blessh-server). See `cli::USAGE`.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cache;
@@ -37,15 +38,25 @@ mod platform {
 }
 
 fn main() {
-    blessh_core::logging::init("warn");
     let args: Vec<String> = std::env::args().collect();
+    let first = args.get(1).map(String::as_str);
+    let server =
+        first == Some("server") && args.get(2).map_or(true, |c| blessh_server::is_command(c));
+    // macOS asks about Bluetooth for the responsible process; these
+    // commands use or check the permission as blessh itself.
     #[cfg(target_os = "macos")]
-    if matches!(args.get(1).map(String::as_str), Some("scan" | "proxy")) {
+    if matches!(first, Some("scan" | "proxy"))
+        || server && matches!(args.get(2).map(String::as_str), Some("enable" | "status"))
+    {
         if let Some(code) = responsible::respawn() {
             std::process::exit(code);
         }
     }
-    let code = match args.get(1).map(String::as_str) {
+    if server {
+        std::process::exit(blessh_server::main(&args[2..]));
+    }
+    blessh_core::logging::init("warn");
+    let code = match first {
         Some("scan") | Some("proxy") => match cli::Cmd::parse() {
             cli::Cmd::Scan(a) => platform::scan(a),
             cli::Cmd::Proxy(a) => platform::proxy(a),

@@ -7,7 +7,7 @@ pub mod central;
 pub mod peripheral;
 pub mod stream;
 
-use std::{io, ops::Deref};
+use std::{io, ops::Deref, time::Duration};
 
 use objc2::{rc::Retained, Message};
 use objc2_core_bluetooth::CBUUID;
@@ -49,6 +49,32 @@ pub(crate) fn uuid_of(uuid: &CBUUID) -> String {
     unsafe { uuid.UUIDString() }.to_string().to_lowercase()
 }
 
+/// Whether this program may use Bluetooth (TCC). macOS answers for the
+/// responsible process: run from a terminal without respawning, that is
+/// the terminal app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Allowed,
+    Denied,
+    Undecided,
+}
+
+pub fn permission() -> Permission {
+    use objc2_core_bluetooth::CBManagerAuthorization as A;
+    // SAFETY: no preconditions.
+    match unsafe { objc2_core_bluetooth::CBManager::authorization_class() } {
+        A::AllowedAlways => Permission::Allowed,
+        A::NotDetermined => Permission::Undecided,
+        _ => Permission::Denied,
+    }
+}
+
+/// Uses Bluetooth once, so that macOS asks for the permission if it has
+/// not been decided, and waits up to `timeout` for Bluetooth to be on.
+pub fn ask_permission(timeout: Duration) -> io::Result<()> {
+    central::Central::new(timeout).map(drop)
+}
+
 /// Why Bluetooth did not come up in time: the system's permission prompt
 /// is the usual reason for a command-line tool.
 pub(crate) fn not_powered_on() -> String {
@@ -56,7 +82,7 @@ pub(crate) fn not_powered_on() -> String {
     let auth = unsafe { objc2_core_bluetooth::CBManager::authorization_class() };
     if auth == objc2_core_bluetooth::CBManagerAuthorization::NotDetermined {
         "waiting for Bluetooth timed out: macOS has not decided whether this program may use \
-         Bluetooth; answer its prompt on the Mac's screen (it names blessh or blessh-server), \
+         Bluetooth; answer its prompt on the Mac's screen (it names blessh), \
          or allow it under System Settings, Privacy & Security, Bluetooth"
             .into()
     } else {

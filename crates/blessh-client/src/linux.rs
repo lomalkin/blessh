@@ -386,7 +386,7 @@ fn eatt_channels(conf: &str) -> Option<u8> {
 /// GATT stream does not support. BlueZ before 5.67 does so by default.
 fn eatt_hint() -> Option<String> {
     // EATT needs the kernel's ECRED L2CAP mode; the server package turns it
-    // off on BlueZ before 5.67 (README, "Bookworm").
+    // off on BlueZ before 5.67 (docs/linux.md, "Bookworm").
     let ecred = std::fs::read_to_string("/sys/module/bluetooth/parameters/enable_ecred");
     if ecred.is_ok_and(|v| v.trim() == "N") {
         return None;
@@ -574,7 +574,7 @@ async fn connect_through_bluetoothd(dev: &Device) -> Result<()> {
             return Err(
                 "the link dropped while bluetoothd discovered the server's services; \
                         it may have found a service that needs encryption and asked the \
-                        server to pair (README, \"Connect from Linux\")"
+                        server to pair (docs/client.md, \"Linux\")"
                     .into(),
             );
         }

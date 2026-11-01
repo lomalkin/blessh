@@ -1,22 +1,31 @@
 #!/bin/sh
-# Builds the macOS release tarball into dist/: binaries, launchd jobs,
-# install scripts. With BLESSH_SIGN_IDENTITY (a code signing identity in
-# the keychain), the binaries are signed with it (sign.sh, also in the
-# tarball to sign on another Mac before installing).
+# Builds the macOS release tarball into dist/: the blessh program as a
+# universal binary (arm64 and x86_64), the signing script and the README.
+# The Homebrew formula installs from it (packaging/homebrew); for a manual
+# test, unpack it and run ./blessh. With BLESSH_SIGN_IDENTITY (a code
+# signing identity in the keychain), the binary is signed with it
+# (sign.sh): macOS then keeps the Bluetooth permission across updates.
+# BLESSH_TARGETS limits the architectures (default: both), e.g. for a quick
+# local build: BLESSH_TARGETS=aarch64-apple-darwin.
 #
 #   packaging/macos/build-tarball.sh
 set -eu
 cd "$(dirname "$0")/../.."
 ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-arch=$(uname -m)
-d=dist/blessh-$ver-macos-$arch
-cargo build --release
+d=dist/blessh-$ver-macos
+targets=${BLESSH_TARGETS:-aarch64-apple-darwin x86_64-apple-darwin}
+bins=
+for t in $targets; do
+    cargo build --release --target "$t" -p blessh-client
+    bins="$bins target/$t/release/blessh"
+done
 rm -rf "$d" "$d.tar.gz"
 mkdir -p "$d"
-cp target/release/blessh target/release/blessh-server target/release/blessh-session "$d/"
+# shellcheck disable=SC2086
+lipo -create -output "$d/blessh" $bins
+# lipo invalidates the linker's ad-hoc signatures; sign the result again.
+codesign --force -s - -i org.blessh "$d/blessh"
 [ -z "${BLESSH_SIGN_IDENTITY:-}" ] || packaging/macos/sign.sh "$BLESSH_SIGN_IDENTITY" "$d"
-cp packaging/macos/install.sh packaging/macos/uninstall.sh packaging/macos/sign.sh packaging/macos/sshd_config \
-    packaging/macos/org.blessh.server.plist packaging/macos/org.blessh.session.plist \
-    README.md docs/protocol.md "$d/"
+cp packaging/macos/sign.sh README.md "$d/"
 tar -C dist -czf "$d.tar.gz" "$(basename "$d")"
 echo "$d.tar.gz"

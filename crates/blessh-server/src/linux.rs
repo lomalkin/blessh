@@ -1,6 +1,6 @@
-//! blessh-server: exposes the BleStream GATT service through BlueZ and
-//! forwards each BLE client to a session socket (normally a systemd socket
-//! that spawns `sshd -i` per connection).
+//! `blessh server run` on Linux: exposes the BleStream GATT service and the
+//! L2CAP channels through BlueZ and forwards each BLE client to a session
+//! socket (normally a systemd socket that spawns `sshd -i` per connection).
 
 use std::{
     collections::HashMap,
@@ -267,30 +267,39 @@ impl Pending {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-pub async fn main() {
+pub fn main(argv: Vec<String>) -> i32 {
     logging::init("info");
-    let args = Args::parse();
+    let args = Args::parse_from(argv);
     let name = match server_name(args.name.as_deref()) {
         Ok(n) => n,
         Err(e) => {
             error!("{e}");
-            std::process::exit(2);
+            return 2;
         }
     };
     if args.print_name {
         println!("{name}");
-        return;
+        return 0;
     }
-    if let Err(e) = serve(args, name).await {
-        error!("{e}");
-        std::process::exit(1);
-    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let code = match rt.block_on(serve(args, name)) {
+        Ok(()) => 0,
+        Err(e) => {
+            error!("{e}");
+            1
+        }
+    };
+    // Tasks blocked on reads must not hold the exit up.
+    rt.shutdown_background();
+    code
 }
 
 /// The name to advertise: `--name`, else the static host name, else the
 /// kernel's (possibly transient) one.
-fn server_name(given: Option<&str>) -> Result<String, String> {
+pub(crate) fn server_name(given: Option<&str>) -> Result<String, String> {
     if let Some(n) = given {
         name::check(n).map_err(|e| format!("--name {n:?}: {e}"))?;
         return Ok(n.to_owned());
