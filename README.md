@@ -30,7 +30,7 @@ the client and the server, on Linux and macOS.
 |---|---|---|
 | Linux: Debian, Ubuntu, Raspberry Pi OS (BlueZ 5.55 or later) | yes | yes |
 | macOS | yes | yes |
-| Android 10 and later | — | ConnectBot BLE (coming) |
+| Android 7 and later | — | [ConnectBot blessh](https://github.com/lomalkin/connectbot-blessh) ([releases](https://github.com/lomalkin/connectbot-blessh/releases)); L2CAP from Android 10, GATT stream before |
 | iOS, Windows, web | — | planned |
 
 # Installing

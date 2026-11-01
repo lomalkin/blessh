@@ -37,8 +37,8 @@ on the wire, whoever writes it, is specified in
 |---|---|---|---|
 | Linux, BlueZ ≥ 5.55 | yes (this repository) | yes (this repository) | L2CAP channel, GATT stream as fallback |
 | macOS | yes (this repository; user session only, since macOS allows BLE to logged-in users; L2CAP clients only) | yes (this repository; L2CAP only) | L2CAP channel |
-| Android 10 and later | no | ConnectBot BLE (GATT today; L2CAP planned) | L2CAP channel, GATT stream |
-| Android 5 to 9 | no | ConnectBot BLE | GATT stream |
+| Android 10 and later | no | [ConnectBot blessh](https://github.com/lomalkin/connectbot-blessh) | L2CAP channel, GATT stream |
+| Android 7 to 9 | no | ConnectBot blessh | GATT stream |
 | iOS 11 and later | no | planned | L2CAP channel, GATT stream |
 | Windows | no | planned | GATT stream (no public L2CAP API) |
 | Web (Chrome, Edge) | no | planned | GATT stream (no L2CAP in Web Bluetooth) |

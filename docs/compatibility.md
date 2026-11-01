@@ -1,6 +1,6 @@
 # What clients rely on
 
-Installed clients (ConnectBot BLE on Android, blessh on Linux, later
+Installed clients (ConnectBot blessh on Android, blessh on Linux, later
 macOS, iOS and web clients) must keep working with newer servers, and the
 other way round, and so must other implementations. The specification is
 [protocol.md](protocol.md); this page lists what a change must not break,
