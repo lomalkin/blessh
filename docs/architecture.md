@@ -135,8 +135,9 @@ feature works unchanged.
   CLOSE 1.
 * The server does not end a link on its own while it carries a session.
   Ten seconds after the last channel of a link closes, the server
-  disconnects it unless a new channel opened; controllers that cannot
-  advertise while connected become visible again that way.
+  disconnects it unless a new channel opened or the client read INFO
+  meanwhile (clients read it before opening a channel); controllers that
+  cannot advertise while connected become visible again that way.
 * Every session has a random 64-bit id, logged by the daemon with the
   device address, the transport and, at the end, duration, byte counts and
   the reason; the session helper logs the same id before sshd's lines
