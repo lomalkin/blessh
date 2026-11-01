@@ -239,12 +239,15 @@ jobs:
           cd ..
           prev=$(git describe --tags --match 'blessh-v*' --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
           # docs/releases/<tag>.md, if present, comes first: what users
-          # must know when upgrading.
-          if [ -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
-            cat "docs/releases/$GITHUB_REF_NAME.md"
-            printf '\n**Commits**\n\n'
-          fi > notes.md
-          git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME" >> notes.md
+          # must know when upgrading. The commit list starts at the
+          # previous release; the first release has none.
+          {
+            [ ! -f "docs/releases/$GITHUB_REF_NAME.md" ] || cat "docs/releases/$GITHUB_REF_NAME.md"
+            if [ -n "$prev" ]; then
+              printf '\n**Commits**\n\n'
+              git log --no-merges --format='- %s' "$prev..$GITHUB_REF_NAME"
+            fi
+          } > notes.md
           cat notes.md
       - name: Publish
         env:

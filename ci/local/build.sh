@@ -44,12 +44,12 @@ cp "$src"/target/*/debian/*.deb "$OUT"/
 (cd "$OUT" && sha256sum *.deb > SHA256SUMS && cat SHA256SUMS)
 
 # Release notes as the CI release job writes them.
-prev=$(git -C "$src" describe --tags --abbrev=0 "$REF^" 2>/dev/null || true)
+prev=$(git -C "$src" describe --tags --match 'blessh-v*' --abbrev=0 "$REF^" 2>/dev/null || true)
 {
-    if [ -f "$src/docs/releases/$REF.md" ]; then
-        cat "$src/docs/releases/$REF.md"
+    [ ! -f "$src/docs/releases/$REF.md" ] || cat "$src/docs/releases/$REF.md"
+    if [ -n "$prev" ]; then
         printf '\n**Commits**\n\n'
+        git -C "$src" log --no-merges --format='- %s' "$prev..$REF"
     fi
-    git -C "$src" log --no-merges --format='- %s' ${prev:+"$prev.."}"$REF"
 } > "$OUT/notes.md"
 echo "built $OUT"
