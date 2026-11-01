@@ -57,6 +57,12 @@ rework (2026-10).
 * The Linux client that joins a link another blessh made takes the PSMs
   from the lock file and reads no INFO; it should read INFO too
   (protocol.md, "Lifetime").
+* The Broadcom controllers of the Pi Zero 2 W and the Pi 3 B+ sometimes
+  stop completing outgoing ACL packets in the middle of a phone session
+  and need a reboot (hardware.md, "blessh 0.2.6"). Worth finding out
+  whether the phone's 7.5 ms connection interval (the app asks for high
+  priority) makes it more likely, and whether the server can notice it
+  (HCI command timeouts in the kernel log) and say so.
 * Large downloads from a macOS server to a Linux client on a controller
   without LE Data Length Extension (Pi Zero 2 W) stop at 64 or 96 KiB;
   uploads and interactive sessions work.
@@ -70,8 +76,16 @@ rework (2026-10).
 
 ## Clients
 
-* Android: L2CAP channel in ConnectBot BLE (`createInsecureL2capChannel`,
-  API 29); the GATT stream keeps working meanwhile.
+* ConnectBot blessh on Android 11 (Pixel 2 XL): in a third to all of
+  the connects, depending on the day, the system's GattService reports
+  the connection to the app but has no record of it, and drops the app's
+  first GATT operation (`discoverServices() - No connection for …` in
+  logcat); no callback ever comes. The app reopens its GATT client on the
+  same link after its 10-second operation timeout, which always worked,
+  so the connect takes 10 s longer. Delaying the operation by a second
+  did not help. Seen with Pi 3 B+ and Pi Zero 2 W servers alike; not
+  known on other Android versions. A shorter discovery timeout would
+  halve the cost; the cause is outside the app.
 * iOS app, sharing the CoreBluetooth code with the macOS client.
 * Windows client over WinRT GATT (no L2CAP API): `blessh proxy` only.
 * Web client (Web Bluetooth + WASM SSH): origin trust and supply chain

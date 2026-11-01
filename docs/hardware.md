@@ -141,6 +141,27 @@ The Pi Zero 2 W's controller hung three times during the day under this
 load (LE Set Random Address answered with EBUSY, then command timeouts);
 only a reboot helped.
 
+### blessh 0.2.6 and ConnectBot blessh r4
+
+The `blessh-v0.2.6` release and ConnectBot blessh r4 from CI, on the same
+machines and the Android 11 phone, on 2026-11-01. CLI as above with 5
+sequential and 5 overlapping sessions per pair: 80/80; 200 KB both ways
+on every pair, except the download from the MacBook to the Pi Zero 2 W,
+which stopped at 64 KiB again. Phone, 3 sessions each to the Pi 3 B+ (by
+name and by address), the Pi Zero 2 W and the MacBook: 12/12; the GATT
+stream (Pi 3 B+ with `--no-l2cap`): 3/3 from the phone and from a Linux
+client.
+
+The reconnect race of 0.2.5 is gone: in three series of 8 phone sessions
+to the Pi Zero 2 W the server dropped no link by its grace timer. Each
+series still lost sessions, all from one cause: the controller stops
+completing outgoing ACL packets in the middle of a session (no Number of
+Completed Packets events from then on; the phone's link times out, the
+Pi keeps the link and later fails HCI commands with "command tx
+timeout"); the Pi 3 B+ did the same once. Only a reboot helps. It
+happened 4 times in about 45 phone sessions that afternoon, after 6, 2
+and 6 sessions on a freshly rebooted Pi Zero 2 W.
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
@@ -151,3 +172,4 @@ only a reboot helped.
 | 2026-10-26 | Android 8 phone | Android 8 | ble-r3 | bench servers | pass | Scan and BLE login |
 | 2026-10-27 | Android 11 and Android 8 (Huawei P9) phones | Android 11, Android 8 | ble-r6 | bench servers | pass | Login without the client's former sshlib workaround (sshlib 0.6.5); the Android 8 phone also finds servers with location off. Two phones at once: the second was told the server is busy, but the first one's session ended a few seconds later (BlueZ, see docs/protocol.md; servers from 0.2.3 avoid it) |
 | 2026-11-01 | Google Pixel 2 XL | Android 11 | ConnectBot blessh r3 | Pi 3 B+ (by name and by address), Pi Zero 2 W, MacBook; blessh 0.2.5 | pass | L2CAP channel to all; 12/12 sessions, with the app stopped between them. A further 5 to the Pi Zero 2 W: 3/5, lost to the reconnect race in backlog.md. GATT stream (server with `--no-l2cap`): 3/3. Upgrade r1 → r2 → r3 keeps hosts and keys |
+| 2026-11-01 | Google Pixel 2 XL | Android 11 | ConnectBot blessh r4 | the same; blessh 0.2.6 | pass | 12/12; no session cut by the server's grace timer. A third to all connects lose 10 s to a GattService fault on this phone (backlog.md); the app recovers by itself. Saved hosts for all three servers |
