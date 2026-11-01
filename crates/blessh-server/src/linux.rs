@@ -404,8 +404,11 @@ struct SessionEnd {
 }
 
 /// How long a link stays up after its last L2CAP session, for a client
-/// that opens the next channel right away.
-const LINK_GRACE: Duration = Duration::from_secs(10);
+/// that opens the next channel right away. Clients typically come back
+/// within ten seconds or so; a grace period of that length met them while
+/// the disconnect, which takes up to three seconds to reach the radio on a
+/// Pi Zero 2 W, was under way, and cut their new session.
+const LINK_GRACE: Duration = Duration::from_secs(30);
 
 const ADV_INTERVAL: Duration = Duration::from_millis(400);
 
