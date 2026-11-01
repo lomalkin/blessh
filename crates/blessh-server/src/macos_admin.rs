@@ -75,6 +75,12 @@ pub fn main(cmd: &str, argv: Vec<String>) -> i32 {
         _ => return status(),
     };
     match result {
+        // After disable the server is meant to be stopped: success, even
+        // though status reports it as not running.
+        Ok(()) if cmd == "disable" => {
+            status();
+            0
+        }
         Ok(()) => status(),
         Err(e) => {
             eprintln!("blessh server {cmd}: {e}");

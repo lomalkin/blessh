@@ -46,7 +46,11 @@ fn main() {
     // commands use or check the permission as blessh itself.
     #[cfg(target_os = "macos")]
     if matches!(first, Some("scan" | "proxy"))
-        || server && matches!(args.get(2).map(String::as_str), Some("enable" | "status"))
+        || server
+            && matches!(
+                args.get(2).map(String::as_str),
+                Some("enable" | "disable" | "status")
+            )
     {
         if let Some(code) = responsible::respawn() {
             std::process::exit(code);
