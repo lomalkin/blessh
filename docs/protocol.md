@@ -193,7 +193,7 @@ reply, refused "busy"       : 42 4c 53 48 01 01 00 00 06 00 01 04 62 75 73 79
 The session ends when either side closes the channel or the link goes
 down; the server then ends sshd's session (EOF, SIGHUP). A client may open
 several channels on one link, one session each. The server does not
-disconnect a link that carries a channel; ten seconds after the last
+disconnect a link that carries a channel; thirty seconds after the last
 channel on a link closed, it may disconnect the link unless a new channel
 opened or the client read INFO meanwhile. A client that reuses a link
 SHOULD read INFO before it opens its channel, so that the link is not

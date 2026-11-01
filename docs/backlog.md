@@ -42,10 +42,12 @@ rework (2026-10).
 
 ## Links
 
-* The Linux server drops a link ten seconds after its last channel closed
-  unless the client read INFO meanwhile. A client that reconnects within
-  the second or two the disconnect takes to reach the radio (slow on a Pi
-  Zero 2 W) still loses its new session. Closing the gap needs a way to
+* The Linux server drops a link thirty seconds after its last channel
+  closed unless the client read INFO meanwhile. A client that reconnects
+  within the seconds the disconnect takes to reach the radio (up to three
+  on a Pi Zero 2 W) still loses its new session; with ten seconds this hit
+  clients that came back right away, thirty moves it past the usual
+  reconnect. Closing the gap needs a way to
   cancel or hold the disconnect, or the client retrying a channel cut
   right after the handshake.
 * The Linux client that joins a link another blessh made takes the PSMs

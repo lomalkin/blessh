@@ -134,7 +134,7 @@ feature works unchanged.
   which the client prints) and closed. A GATT client beyond the limit gets
   CLOSE 1.
 * The server does not end a link on its own while it carries a session.
-  Ten seconds after the last channel of a link closes, the server
+  Thirty seconds after the last channel of a link closes, the server
   disconnects it unless a new channel opened or the client read INFO
   meanwhile (clients read it before opening a channel); controllers that
   cannot advertise while connected become visible again that way.
