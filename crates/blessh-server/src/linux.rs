@@ -94,6 +94,11 @@ struct Args {
     /// Seconds a client has for its channel hello.
     #[arg(long, default_value_t = 10)]
     hello_timeout: u64,
+    /// Advertise as discoverable, so that the server also appears in the
+    /// Bluetooth device lists of phones and computers; blessh clients find
+    /// it either way.
+    #[arg(long)]
+    discoverable: bool,
 }
 
 /// Sessions in progress over both transports, per client device.
@@ -419,10 +424,18 @@ const LINK_GRACE: Duration = Duration::from_secs(30);
 
 const ADV_INTERVAL: Duration = Duration::from_millis(400);
 
-async fn advertise(adapter: &Adapter, name: &str) -> bluer::Result<AdvertisementHandle> {
+/// Advertises the service and the name. Without `discoverable` the
+/// advertisement lacks the discoverable flags, which keeps the server out
+/// of the device lists of system settings; clients scan for the service
+/// UUID and find it anyway (protocol.md, "Discovery").
+async fn advertise(
+    adapter: &Adapter,
+    name: &str,
+    discoverable: bool,
+) -> bluer::Result<AdvertisementHandle> {
     let adv = Advertisement {
         service_uuids: [SERVICE_UUID].into_iter().collect(),
-        discoverable: Some(true),
+        discoverable: Some(discoverable),
         local_name: Some(name.to_owned()),
         // BlueZ defaults to 1.28 s; a phone can only start connecting after it
         // hears an advertisement, so a shorter interval makes connects faster.
@@ -591,7 +604,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     let adapter_events = session.events().await?;
     wait_interfaces(&adapter).await?;
     let _app = adapter.serve_gatt_application(app).await?;
-    let mut adv = Some(advertise(&adapter, &name).await?);
+    let mut adv = Some(advertise(&adapter, &name, args.discoverable).await?);
     let channels: Vec<String> = listeners
         .iter()
         .map(|(_, p, m)| format!("PSM 0x{p:02x} (MTU {m})"))
@@ -756,7 +769,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                 // here raced with reconnecting clients in tests, so it is opt-in.
                 if args.readvertise {
                     adv = None;
-                    match advertise(&adapter, &name).await {
+                    match advertise(&adapter, &name, args.discoverable).await {
                         Ok(h) => adv = Some(h),
                         Err(e) => error!("re-registering advertisement failed: {e}"),
                     }
@@ -764,7 +777,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
             }
             _ = tick.tick() => {
                 if adv.is_none() {
-                    match advertise(&adapter, &name).await {
+                    match advertise(&adapter, &name, args.discoverable).await {
                         Ok(h) => adv = Some(h),
                         Err(e) => debug!("advertising retry failed: {e}"),
                     }
