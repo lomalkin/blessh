@@ -37,11 +37,28 @@ mod platform {
     }
 }
 
+/// Commands that only print end quietly when their reader goes away
+/// (`blessh scan | head`), like other command-line tools; Rust ignores
+/// SIGPIPE, which turns that into a panic. Not for the proxy and the
+/// server, which write to sockets and must see the error instead.
+fn default_sigpipe() {
+    // SAFETY: restores the default disposition before any thread starts.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let first = args.get(1).map(String::as_str);
     let server =
         first == Some("server") && args.get(2).map_or(true, |c| blessh_server::is_command(c));
+    let printing = match first {
+        Some("server") => !matches!(args.get(2).map(String::as_str), Some("run" | "session")),
+        Some("scan" | "-h" | "--help" | "help" | "-V" | "--version") | None => true,
+        _ => false,
+    };
+    if printing {
+        default_sigpipe();
+    }
     // macOS asks about Bluetooth for the responsible process; these
     // commands use or check the permission as blessh itself.
     #[cfg(target_os = "macos")]
