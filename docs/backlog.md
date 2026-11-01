@@ -40,6 +40,21 @@ rework (2026-10).
 * Verify on hardware: CoreBluetooth against BlueZ over the channel, the
   permission prompt for a LaunchAgent, sleep and logout behaviour.
 
+## Links
+
+* The Linux server drops a link ten seconds after its last channel closed
+  unless the client read INFO meanwhile. A client that reconnects within
+  the second or two the disconnect takes to reach the radio (slow on a Pi
+  Zero 2 W) still loses its new session. Closing the gap needs a way to
+  cancel or hold the disconnect, or the client retrying a channel cut
+  right after the handshake.
+* The Linux client that joins a link another blessh made takes the PSMs
+  from the lock file and reads no INFO; it should read INFO too
+  (protocol.md, "Lifetime").
+* Large downloads from a macOS server to a Linux client on a controller
+  without LE Data Length Extension (Pi Zero 2 W) stop at 64 KiB; uploads
+  and interactive sessions work.
+
 ## Distribution
 
 * An APT repository (for example on GitHub Pages), so that Debian and
