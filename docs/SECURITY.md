@@ -8,8 +8,7 @@ their status changes.
 
 Do not report vulnerabilities in public issues. Use GitHub's private
 vulnerability reporting (Security tab, "Report a vulnerability") or a draft
-security advisory; while the repository is private, contact the
-maintainers directly. Include the affected version (`blessh --version`),
+security advisory. Include the affected version (`blessh --version`),
 the BlueZ and OS versions, and steps to reproduce. Fixes go into the next
 release; only the latest release is supported. Vulnerabilities of the
 Android client belong to the client's repository.
