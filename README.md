@@ -71,15 +71,17 @@ table of checks and the host key fingerprint. Details:
 # Usage
 
 ```
-blessh scan                          # servers in range
+blessh                               # pick a server from a list, press its key
 blessh alice@my-pi                   # connect by the advertised name
 blessh -L 8080:localhost:80 my-pi    # any ssh option or command
+blessh scan                          # servers in range, for scripts
 ```
 
 `blessh` runs the system ssh, so every ssh feature works. The server's
 host key is pinned as `blessh-<name>` in `~/.ssh/known_hosts`: compare its
-fingerprint on the first connection. Without a user, `blessh` logs in as
-the current one. The same from `ssh_config`:
+fingerprint on the first connection. The user is chosen as ssh does
+(`user@`, `-l`, `~/.ssh/config`, else the current one). The same from
+`ssh_config`:
 
 ```
 Host my-pi

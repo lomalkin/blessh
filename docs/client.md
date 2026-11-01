@@ -7,19 +7,22 @@ behaviour, and what each platform adds. Installation:
 ## Usage
 
 ```
-blessh scan                        # servers in range
+blessh                             # pick a server from a list
+blessh alice@                      # the same, logging in as alice
 blessh alice@my-pi                 # by the advertised name
 blessh alice@AA:BB:CC:DD:EE:FF     # by Bluetooth address (Linux)
 blessh -p 22 -L 8080:localhost:80 alice@my-pi   # any ssh option or command
+blessh scan                        # servers in range, for scripts
 ```
 
 `blessh` runs the system ssh with a ProxyCommand of `blessh proxy` and a
 HostKeyAlias (`blessh-<name>` or `blessh-<address>`), so the server's host
 key is pinned under that name in `~/.ssh/known_hosts`; compare the
 fingerprint on the first connection. It also turns on ssh compression
-(`-o Compression=no` turns it off) and, without `user@` or `-l`, logs in
-as the current user, like ssh does. To reach a host named `scan`, `proxy`
-or `server`, give a user (`alice@server`) or put `--` before it.
+(`-o Compression=no` turns it off). The user is ssh's choice: `user@`,
+`-l`, `User` in `~/.ssh/config` for the server's name, else the current
+user. To reach a host named `scan`, `proxy` or `server`, give a user
+(`alice@server`) or put `--` before it.
 
 The same works from `ssh_config`:
 
@@ -31,6 +34,71 @@ Host my-pi
 
 `BLESSH_PROXY_ARGS` passes options to the proxy, for example `--adapter
 hci1` or `--gatt`; `blessh proxy --help` lists them.
+
+## Choosing a server
+
+Without a server, on a terminal, `blessh` lists the servers in range as
+it hears them and connects to the one whose key you press:
+
+```
+$ blessh
+Scanning for blessh servers · 1-9 a-z connect · 0 q Esc quit
+ 1  my-pi                          ▂▄▆█  -52 dBm  AA:BB:CC:00:00:01
+ 2  garage-pi                      ▂▄▆   -67 dBm  AA:BB:CC:00:00:02
+ 3  my-pi                          ▂▄    -74 dBm  AA:BB:CC:00:00:03  same name as 1
+→ garage-pi
+```
+
+* Keys `1` to `9`, then `a` to `z` without `q`, select rows; a row keeps
+  its key, and rows are only added, never redrawn. `0`, `q`, Esc and
+  Ctrl-C quit. Nothing else selects, Enter included.
+* The signal is the strength of the first advertisement heard, in dBm and
+  as four bars (`####` without a UTF-8 locale); colours only on a terminal
+  and without `NO_COLOR`.
+* On macOS the column after the signal is the start of CoreBluetooth's
+  device identifier; `blessh scan` prints it whole.
+* ssh options and a command given without a server apply to the server
+  chosen: `blessh alice@ uptime`, `blessh -l alice`, `blessh -L
+  8080:localhost:80`.
+* ssh connects to the server's name, so the host key and `~/.ssh/config`
+  entries are those of the name; a server whose name another row has, or
+  whose name is not a valid server name, is reached by its address (on
+  macOS its identifier) instead, and its host key is pinned under that.
+  The proxy goes straight to the device chosen (`blessh proxy --device`)
+  and refuses it if its INFO names another server by then.
+* While macOS asks for the Bluetooth permission, a line says so.
+
+The list's own process keeps the terminal and runs ssh; a child `blessh
+scan --format tsv --timeout 0` scans, so on macOS ssh keeps the
+terminal's privacy permissions (files in Documents, for example) while
+the scan has blessh's Bluetooth permission. Without a terminal, `blessh`
+alone is `blessh scan`.
+
+## Scan output
+
+`blessh scan` prints a row per server as soon as its advertised name and
+signal strength are known, each server once; servers whose name never
+came are printed at the end without one. `--timeout` sets the seconds to
+scan (10 by default); `--timeout 0` scans until the process is stopped or
+its parent exits. `--format` chooses:
+
+* `human` (default): the name in a column 29 characters wide (the
+  longest server name), the signal, the device, and `duplicate name`
+  after a name an earlier row had; on a terminal also signal bars and
+  colours.
+* `tsv`: `name`, `rssi` and `id` separated by tabs, one row per line.
+* `json`: one object per line, `{"name":"my-pi","rssi":-52,"id":"AA:BB:CC:00:00:01"}`.
+
+The fields, in every format:
+
+| Field | Value |
+|---|---|
+| `name` | the advertised name, empty if unknown; control characters and backslashes as `\xHH`, since anyone in range can advertise any name |
+| `rssi` | signal strength in dBm, an integer |
+| `id` | Bluetooth address (Linux) or CoreBluetooth identifier in lower case (macOS): what `blessh` and `blessh proxy` accept as the server |
+
+Fields may be added after `id` in later versions; a reader ignores those
+it does not know. Errors and notes go to stderr.
 
 ## Server names
 

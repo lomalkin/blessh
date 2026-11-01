@@ -86,6 +86,31 @@ rework (2026-10).
   did not help. Seen with Pi 3 B+ and Pi Zero 2 W servers alike; not
   known on other Android versions. A shorter discovery timeout would
   halve the cost; the cause is outside the app.
+* `blessh`'s list (docs/client.md, "Choosing a server"):
+  * Servers it does not show: one this machine is connected to already,
+    and one whose controller does not advertise while another client is
+    connected; `blessh <name>` still reaches the first.
+  * On Linux the list shows the name bluetoothd has for a device, which
+    after an earlier connection may be the server's GAP device name
+    (BlueZ's `Name` in `main.conf` or the pretty host name) rather than
+    the advertised one. The proxy still reaches the device chosen, but
+    the host key is pinned under the wrong name (a later `blessh <real
+    name>` asks for it again) and duplicate names are judged by it. The
+    name in the advertisement's service data would fix it (see "Server
+    and protocol").
+  * The list's scan takes the default adapter; a `BLESSH_ADAPTER` for the
+    scan and the proxy alike would choose another.
+  * Marks for servers whose host key is known, or that were used
+    recently: a small command or option, not in the list itself.
+* A server name that is also a `Host` in `~/.ssh/config` gets that
+  entry's settings over BLE too (`User` and `IdentityFile` may be
+  wanted), and with `ControlMaster auto` and a `ControlPath` built from
+  `%h`, `blessh <name>` may reuse the network connection's master
+  silently. Possible: `-o ControlPath=none` unless the user sets one, and
+  a tag for `Match tagged` (OpenSSH 9.4 and later; Debian 12 has 9.2).
+* Shell completion of server names from those seen recently.
+* `blessh doctor`: adapter, Bluetooth permission, BlueZ version, EATT, the
+  server's state, in one report.
 * iOS app, sharing the CoreBluetooth code with the macOS client.
 * Windows client over WinRT GATT (no L2CAP API): `blessh proxy` only.
 * Web client (Web Bluetooth + WASM SSH): origin trust and supply chain

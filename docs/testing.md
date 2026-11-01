@@ -13,7 +13,7 @@ not done until these pass.
 | Check | How |
 |---|---|
 | Formatting, lints | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` |
-| Protocol state machine, relay, preamble, client argument parsing | `cargo test` |
+| Protocol state machine, relay, preamble, client argument parsing; the server list on a pseudo-terminal with a fake scanner and ssh (keys, ssh's arguments, the terminal restored, the scan ended) | `cargo test` |
 | OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh server session` | `tests/e2e-loopback.sh` |
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
@@ -30,7 +30,7 @@ hours and need root, a lot of memory or the bench, so they are not in CI.
 
 | Check | How |
 |---|---|
-| Both transports over real BlueZ with two virtual controllers: L2CAP sessions, the ssh wrapper, two sessions on one link, the session limit, link loss, reconnects, the GATT stream with and without write responses (root, `hci_vhci`, `btvirt -L -l2`) | `tests/e2e-vhci.sh` (`SERVER_HCI`/`CLIENT_HCI` when a real adapter holds hci0); again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
+| Both transports over real BlueZ with two virtual controllers: L2CAP sessions, the ssh wrapper, a server picked from blessh's list (`tests/pick-drive.py` presses its key), two sessions on one link, the session limit, link loss, reconnects, the GATT stream with and without write responses (root, `hci_vhci`, `btvirt -L -l2`) | `tests/e2e-vhci.sh` (`SERVER_HCI`/`CLIENT_HCI` when a real adapter holds hci0); again with `DAEMON_USER=nobody` (D-Bus policy) and with a small ATT MTU (`ExchangeMTU = 48`, `Channels = 1` in bluetoothd's configuration) |
 | Undefined behaviour | `cargo +nightly miri test -p blessh-core` (about 40 min) |
 | Model checking: no frame of up to 16 bytes makes the decoder panic | `cargo kani -p blessh-core` (about a minute) |
 | AddressSanitizer, LeakSanitizer | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test --target x86_64-unknown-linux-gnu`, and the loopback test with such a build |
