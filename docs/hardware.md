@@ -162,6 +162,22 @@ timeout"); the Pi 3 B+ did the same once. Only a reboot helps. It
 happened 4 times in about 45 phone sessions that afternoon, after 6, 2
 and 6 sessions on a freshly rebooted Pi Zero 2 W.
 
+### The server list (after 0.2.6)
+
+A CI build of `dev` with the list `blessh` shows without a server
+(docs/client.md, "Choosing a server"), on 2026-11-01, on the Pi 3 B+,
+the Pi Zero 2 W and the MacBook: Linux to Linux both ways, Linux to the
+MacBook and the MacBook to the Pi 3 B+. Per pair, `blessh scan` in the
+three formats, three sessions picked from the list by a key pressed on a
+pseudo-terminal (`tests/pick-drive.py`), and a `blessh scan --timeout 0`
+whose parent was killed: 12/12 picked sessions, no scan left running
+after a pick or after its parent was killed (on the MacBook both of the
+scan's processes); 11 of 12 eight-second scans named the expected server
+(one on the MacBook missed it). A session picked from the list took 1 to
+9 s from the MacBook and 5 to 18 s from a Linux client, the server's row
+appearing 0.3 to 4 s after the scan started; a direct `blessh` session
+from the Pi Zero 2 W to the Pi 3 B+ took 7.5 to 10 s.
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
