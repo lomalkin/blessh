@@ -5,12 +5,12 @@
 #
 # <formula> is a template here without .rb.in (blessh). The URL
 # defaults to the tarball's asset in the GitHub release of the workspace
-# version (tag blessh-vX.Y.Z). The version is set explicitly: Homebrew
-# might read a number from the file name.
+# version (tag blessh-vX.Y.Z). Homebrew reads the version from the file
+# name (blessh-X.Y.Z-macos.tar.gz).
 set -eu
 formula=$1 tarball=$2
 dir=$(dirname "$0")
 ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$dir/../../Cargo.toml" | head -n 1)
 url=${3:-https://github.com/lomalkin/blessh/releases/download/blessh-v$ver/$(basename "$tarball")}
 sha=$(shasum -a 256 "$tarball" | cut -d' ' -f1)
-sed -e "s|@URL@|$url|" -e "s|@VERSION@|$ver|" -e "s|@SHA256@|$sha|" "$dir/$formula.rb.in"
+sed -e "s|@URL@|$url|" -e "s|@SHA256@|$sha|" "$dir/$formula.rb.in"
