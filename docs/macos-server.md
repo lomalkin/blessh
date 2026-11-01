@@ -17,7 +17,8 @@ Run these as the user whose session serves Bluetooth, without sudo:
 macOS grants Bluetooth to logged-in users only, so the server runs in that
 user's session and is reachable only while the user is logged in. The
 server uses the L2CAP channel only (the GATT stream is not available on
-macOS yet), so it needs clients with L2CAP: Linux, macOS, Android 10 and
+macOS yet; INFO says `gatt=0`, see [protocol.md](protocol.md#gatt-service)),
+so it needs clients with L2CAP: Linux, macOS, Android 10 and
 later, iOS.
 
 `enable` does, leaving alone what is already in place:

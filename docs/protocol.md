@@ -1,10 +1,76 @@
-# blessh transport
+# blessh protocol
+
+This is the specification of blessh on the wire: what a client and a
+server exchange, and what each must do so that any client works with any
+server. A client or server written from this document, in any language and
+on any platform, is compatible with blessh; the implementation in this
+repository follows it, and where they differ the document is right or the
+difference is a bug. How the protocol may change without breaking
+installed peers: [compatibility.md](compatibility.md).
 
 A blessh server is a BLE peripheral that advertises one service. A client
 connects, reads INFO and runs SSH over one of two transports: an L2CAP
 connection-oriented channel (the main one) or the GATT stream BleStream v1
 (the fallback). Either way the bytes are a plain SSH connection to the
-server's `sshd -i`.
+server's SSH server.
+
+The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. The
+whole document is normative, except platform notes, rationale and
+sections whose title asks "why".
+
+## Requirements
+
+The rest of the document defines each item; this list is the checklist
+for a new implementation.
+
+A server:
+
+* MUST advertise the service UUID and a name that follows the name rules
+  ([Discovery](#discovery), [Names](#names)).
+* MUST serve the GATT service with the INFO characteristic, readable
+  without pairing or encryption, with long reads; INFO MUST contain
+  `proto` and `name`, and the keys that describe the transports it offers
+  ([GATT service](#gatt-service)).
+* MUST offer at least one transport. A server with L2CAP channels MUST
+  list them in `psm`, set `chan`, put the first PSM in the PSM
+  characteristic, and run the channel handshake on every channel
+  ([L2CAP channel](#l2cap-channel)). A server that does not serve the GATT
+  stream MUST say so with `gatt=0`. A server SHOULD serve the GATT stream:
+  clients without L2CAP (web, Windows, Android before 10) have nothing
+  else.
+* MUST carry one SSH session per channel, as plain bytes to an SSH server
+  that uses the host's SSH configuration and host keys, and MUST end that
+  session when the channel or the link goes away
+  ([Lifetime](#lifetime)).
+* MUST refuse a channel it cannot serve with a refusal reply, not by
+  closing it silently.
+
+A client:
+
+* MUST select servers by the service UUID and by name or address, compare
+  names as the name rules say, and ignore INFO keys it does not know.
+* MUST use the L2CAP channels when the server lists them, `chan` names a
+  handshake version the client speaks and the platform has L2CAP: try them
+  in the listed order, run the handshake, and on a stall go on to the next
+  one ([Channel handshake](#channel-handshake)). It MUST fall back to the
+  GATT stream after the channels, unless INFO has `gatt=0`.
+* MUST, on the GATT stream, follow the [client rules](#client-rules) and
+  not subscribe while INFO has `busy=1`.
+* MUST pass the SSH bytes unchanged and leave authentication to SSH; it
+  SHOULD pin the server's host key per server name, since BLE names and
+  addresses are not authenticated.
+* MUST show refusal reasons and CLOSE messages to the user and MUST NOT
+  act on their text.
+
+Both sides MUST ignore unknown flags, options, keys and trailing bytes
+where this document says so; that is how the protocol grows
+([compatibility.md](compatibility.md)).
+
+Checking an implementation: the [handshake](#channel-handshake) and
+[BleStream](#test-vectors) test vectors below; against the implementation
+in this repository, `blessh server run` and `blessh proxy` on Linux or
+macOS, and `blessh-loopback` for the GATT stream without a radio
+([testing.md](testing.md)).
 
 ## Discovery
 
@@ -12,6 +78,16 @@ The server advertises the service UUID `5b1e7e00-6d2c-4f4a-9a3e-2c1b0e8f4a10`
 (16-bit list form is not used) and its name as the local name; the
 advertising interval is 400 ms. Clients scan for the UUID and select a
 server by name or by address. Neither is authenticated: the SSH host key is.
+
+## Names
+
+A server's name follows host name rules (RFC 1123 labels): ASCII letters,
+digits and hyphens, parts separated by dots, no part empty or starting or
+ending with a hyphen, at most 29 bytes (what fits the scan response of a
+legacy advertisement). Names are
+compared without regard to ASCII case, and a trailing dot is ignored. A
+server that derives its name from the host's takes the first part of the
+host name and replaces other characters with hyphens.
 
 ## GATT service
 
@@ -76,9 +152,10 @@ option = type:u8 len:u8 value
   client aborts if the reply's version is higher than its own.
 - `flags`: none defined; senders set 0, receivers ignore them.
 - `status`: 0 accepted, 1 refused. A refused reply has `probe_len` 0 and
-  a reason option; the server then closes the channel. Reasons: `busy (N
-  sessions)` when the server's session limit is reached, `session
-  unavailable` when it cannot start sshd.
+  a reason option; the server then closes the channel. Reasons are text
+  for people, for example `busy (N sessions)` when the server's session
+  limit is reached, or `session unavailable` when it cannot start the SSH
+  server; clients show them and never parse them.
 - `options`: at most 1024 bytes. Defined: type 1, the reason (UTF-8),
   in replies. Receivers ignore types they do not know, so later versions
   can add options without breaking older peers.
@@ -101,6 +178,15 @@ The handshake shows that the channel carries data both ways with the
 sizes SSH uses before SSH starts; without it, a stalled channel looks like
 a hung login. Its cost is one round trip and the probe, about 0.1 to 0.3
 seconds on a typical link.
+
+Test vectors (version 1, a 4-byte probe `abcd`; real clients send 2048
+bytes):
+
+```
+hello, probe "abcd"         : 42 4c 53 48 01 00 04 00 00 00 61 62 63 64
+reply, accepted             : 42 4c 53 48 01 00 04 00 00 00   (then the echo 61 62 63 64)
+reply, refused "busy"       : 42 4c 53 48 01 01 00 00 06 00 01 04 62 75 73 79
+```
 
 ### Lifetime
 

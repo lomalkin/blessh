@@ -2,7 +2,9 @@
 
 blessh carries SSH over Bluetooth Low Energy. This document fixes the
 principles the design follows, the platforms it serves and how the pieces
-fit together. The wire details are in [protocol.md](protocol.md).
+of this implementation fit together. What every client and server must do
+on the wire, whoever writes it, is specified in
+[protocol.md](protocol.md).
 
 ## Principles
 

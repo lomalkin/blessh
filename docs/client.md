@@ -34,14 +34,17 @@ hci1` or `--gatt`; `blessh proxy --help` lists them.
 
 ## Server names
 
-A server advertises a name that follows host name rules: letters, digits
-and hyphens, parts separated by dots, at most 29 bytes (what fits the
-advertisement), compared without regard to case. Defaults are derived
-accordingly: the first part of a host name, other characters replaced by
-hyphens. If no server has the name given, the error lists the names of the
-servers in range.
+A server advertises a name that follows host name rules, at most 29 bytes,
+compared without regard to case ([protocol.md](protocol.md#names)).
+Servers derive their default from the host name: the first part, other
+characters replaced by hyphens. If no server has the name given, the error
+lists the names of the servers in range.
 
 ## Transports and fallback
+
+The transports and the order in which a client tries them are part of the
+protocol ([protocol.md](protocol.md#requirements)); this section describes
+what `blessh` shows of them.
 
 One line before the session says which transport is in use:
 `blessh: my-pi AA:BB:CC:DD:EE:FF: l2cap, mtu 1024`, or `gatt, frame 497`

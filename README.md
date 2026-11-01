@@ -19,8 +19,10 @@ the client and the server, on Linux and macOS.
   reconfigured and other Bluetooth devices keep working; there is nothing
   to configure. On macOS no blessh code runs as root.
 * **Any client, any server.** Every client works with every server on
-  every platform, and the protocol only grows in ways that keep installed
-  clients working ([compatibility.md](docs/compatibility.md)).
+  every platform. The [protocol](docs/protocol.md) is the specification
+  they all follow, open to other implementations, and it only grows in
+  ways that keep installed clients working
+  ([compatibility.md](docs/compatibility.md)).
 
 ## Platforms
 
@@ -100,6 +102,10 @@ More: [docs/client.md](docs/client.md).
 
 # Documentation
 
+* [docs/protocol.md](docs/protocol.md): the specification; what a
+  compatible client or server must do, with test vectors. Start here to
+  write one. [docs/compatibility.md](docs/compatibility.md): how it may
+  change.
 * [docs/linux.md](docs/linux.md): packages, server settings, logs and
   audit, requirements, desktop systems, Bookworm.
 * [docs/macos-server.md](docs/macos-server.md): the macOS server, and why
@@ -108,10 +114,8 @@ More: [docs/client.md](docs/client.md).
   server names, platform notes.
 * [docs/SECURITY.md](docs/SECURITY.md): recommendations, threat model,
   reporting vulnerabilities.
-* [docs/architecture.md](docs/architecture.md),
-  [docs/protocol.md](docs/protocol.md),
-  [docs/compatibility.md](docs/compatibility.md): design and wire
-  protocol.
+* [docs/architecture.md](docs/architecture.md): design, platforms and
+  components of this implementation.
 * [docs/development.md](docs/development.md),
   [docs/testing.md](docs/testing.md): building, testing, releasing.
 

@@ -33,6 +33,11 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 * Protocol and client-facing behaviour: read
   [compatibility.md](compatibility.md). Anything listed there must keep
   working with clients that are already installed.
+* [protocol.md](protocol.md) is the specification for every
+  implementation, including other people's. Whatever a peer relies on is
+  stated there, and only there: other documents link to it instead of
+  repeating it. A change a peer can observe updates protocol.md in the
+  same commit.
 * Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test` and `cargo build && tests/e2e-loopback.sh`; for transport
   changes also `tests/e2e-vhci.sh` on a Linux machine with `btvirt`.
@@ -42,7 +47,7 @@ attribution (no `Co-Authored-By` for tools, no "Generated with" lines).
 | File | Contents |
 |---|---|
 | [architecture.md](architecture.md) | Principles, platforms, transports, components, session model |
-| [protocol.md](protocol.md) | Wire protocol: discovery, GATT service, L2CAP channel, BleStream (normative) |
+| [protocol.md](protocol.md) | The specification: requirements for clients and servers, discovery, names, GATT service, L2CAP channel and handshake, BleStream, test vectors |
 | [compatibility.md](compatibility.md) | What installed clients rely on and how the protocol grows |
 | [linux.md](linux.md) | Linux: packages, server settings, logs and audit, requirements, desktop systems, Bookworm |
 | [macos-server.md](macos-server.md) | The macOS server: setup, names, logs, and how it reaches sshd (the options compared) |
