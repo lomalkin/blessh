@@ -33,7 +33,10 @@ use bluer::{
 use futures::StreamExt;
 use log::{debug, info, warn};
 
-use crate::cli::{stop_signal, ProxyArgs, ScanArgs};
+use crate::{
+    cli::{stop_signal, ProxyArgs, ScanArgs},
+    listing::{Printer, Row},
+};
 
 /// How long making the LE link may take (the device must be advertising).
 const LINK_TIMEOUT: Duration = Duration::from_secs(20);
@@ -95,7 +98,8 @@ async fn adapter(name: Option<&str>) -> Result<Adapter> {
 async fn scan_async(args: ScanArgs) -> Result<i32> {
     let adapter = adapter(args.adapter.as_deref()).await?;
     let local = adapter.address().await?;
-    find(&adapter, local, None, args.timeout, true).await?;
+    let mut printer = Printer::new(args.format);
+    find(&adapter, local, None, args.duration(), Some(&mut printer)).await?;
     Ok(0)
 }
 
@@ -151,7 +155,9 @@ async fn probe(local: Address, dev: &Device) -> Result<(AttLink, String)> {
 }
 
 /// Finds the server: by address or advertised name, or the first one seen
-/// when `target` is None. With `list`, prints every server instead.
+/// when `target` is None. With `list`, prints every server instead, once
+/// its name and signal strength are known (servers whose name never came
+/// at the end).
 ///
 /// bluetoothd may show a device under another name than the one it
 /// advertises (its GAP device name, read once over some connection), so a
@@ -160,8 +166,8 @@ async fn find(
     adapter: &Adapter,
     local: Address,
     target: Option<&str>,
-    timeout: u64,
-    list: bool,
+    timeout: Duration,
+    mut list: Option<&mut Printer>,
 ) -> Result<Option<Found>> {
     if let Some(addr) = target.and_then(|t| t.parse::<Address>().ok()) {
         if let Ok(dev) = adapter.device(addr) {
@@ -187,13 +193,15 @@ async fn find(
     // bluetoothd may not answer StartDiscovery while another process
     // connects to a device; the devices it knows are checked meanwhile.
     let mut events = start_discovery(adapter).await?;
-    let deadline = tokio::time::sleep(Duration::from_secs(timeout));
+    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
     // Advertised UUIDs and names can arrive after DeviceAdded, so devices
     // are re-checked until they match or the scan ends.
     // Devices BlueZ already knows produce no DeviceAdded event.
     let mut candidates: Vec<Address> = adapter.device_addresses().await?;
     let mut listed: HashSet<Address> = HashSet::new();
+    // Servers listed without a name if none comes before the scan ends.
+    let mut unnamed: Vec<(Address, i16)> = Vec::new();
     let mut probed: HashSet<Address> = HashSet::new();
     // Servers in range with their names, for the error message.
     let mut seen: Vec<(Address, String)> = Vec::new();
@@ -202,8 +210,14 @@ async fn find(
     loop {
         tokio::select! {
             _ = &mut deadline => {
-                if let (Some(t), false) = (target, list) {
-                    return Err(not_found(t, &seen).into());
+                match (target, list) {
+                    (_, Some(printer)) => {
+                        for (addr, rssi) in unnamed {
+                            printer.row(&Row::new("", rssi, &addr.to_string()));
+                        }
+                    }
+                    (Some(t), None) => return Err(not_found(t, &seen).into()),
+                    (None, None) => {}
                 }
                 return Ok(None);
             }
@@ -245,7 +259,7 @@ async fn find(
             // advertise while connected: a device seen in this scan or
             // connected whose name matches is a candidate all the same, and
             // its INFO tells.
-            let named = !list
+            let named = list.is_none()
                 && target.is_some_and(|t| name::same(t, &name) || name::same(t, &alias))
                 && (dev.rssi().await.ok().flatten().is_some()
                     || dev.is_connected().await.unwrap_or(false));
@@ -255,12 +269,18 @@ async fn find(
             if !seen.iter().any(|(a, _)| *a == addr) {
                 seen.push((addr, name.clone()));
             }
-            if list {
-                if listed.insert(addr) {
-                    println!(
-                        "{addr}  {name}  rssi={}",
-                        dev.rssi().await.ok().flatten().unwrap_or_default()
-                    );
+            if let Some(printer) = list.as_deref_mut() {
+                // A device bluetoothd knows but did not hear in this scan
+                // has no RSSI.
+                if let Some(rssi) = dev.rssi().await.ok().flatten() {
+                    if name.is_empty() {
+                        if !listed.contains(&addr) && !unnamed.iter().any(|(a, _)| *a == addr) {
+                            unnamed.push((addr, rssi));
+                        }
+                    } else if listed.insert(addr) {
+                        unnamed.retain(|(a, _)| *a != addr);
+                        printer.row(&Row::new(&name, rssi, &addr.to_string()));
+                    }
                 }
                 continue;
             }
@@ -584,15 +604,27 @@ async fn connect_through_bluetoothd(dev: &Device) -> Result<()> {
     }
 }
 
+/// With `--device`, the server on that device must still have the name
+/// it was chosen by.
+fn check_name(info: &str, args: &ProxyArgs) -> Result<()> {
+    if let (Some(device), Some(target)) = (&args.device, &args.target) {
+        let n = protocol::info_value(info, "name").unwrap_or_default();
+        if !name::same(n, target) {
+            return Err(format!("{device} is now the server {n:?}, not {target:?}").into());
+        }
+    }
+    Ok(())
+}
+
 async fn proxy_async(args: ProxyArgs) -> Result<i32> {
     let adapter = adapter(args.adapter.as_deref()).await?;
     let local = adapter.address().await?;
     let Some(found) = find(
         &adapter,
         local,
-        args.target.as_deref(),
-        args.scan_timeout,
-        false,
+        args.device.as_deref().or(args.target.as_deref()),
+        Duration::from_secs(args.scan_timeout),
+        None,
     )
     .await?
     else {
@@ -655,6 +687,7 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
         .map_or(bluez_name.clone(), str::to_owned);
     if let Some(i) = &info {
         info!("server info: {}", printable(i));
+        check_name(i, args)?;
     }
     let psms = match &info {
         Some(i) => protocol::info_psms(i),

@@ -2,18 +2,23 @@
 //!
 //! `blessh [ssh options] [user@]server [command]` runs the system ssh with
 //! a ProxyCommand of `blessh proxy`, which relays the session over BLE;
-//! `blessh scan` lists servers in range; `blessh server ...` is the server
-//! (crate blessh-server). See `cli::USAGE`.
+//! without a server it lets the user pick one (`pick`); `blessh scan` lists
+//! servers in range; `blessh server ...` is the server (crate
+//! blessh-server). See `cli::USAGE`.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cache;
 mod cli;
 #[cfg(target_os = "linux")]
 mod linux;
+mod listing;
 #[cfg(target_os = "macos")]
 mod macos;
+mod pick;
 #[cfg(target_os = "macos")]
 mod responsible;
+
+use std::{io::IsTerminal, os::unix::process::CommandExt};
 
 use clap::Parser;
 
@@ -46,6 +51,24 @@ fn default_sigpipe() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 }
 
+/// Ends this process when its parent goes away: a scan that a list
+/// started (`pick`) must not outlive it, even if it was killed. On macOS
+/// this is the scan's first process, whose child follows it
+/// (`responsible`).
+fn exit_with_parent() {
+    // SAFETY: no preconditions.
+    let parent = unsafe { libc::getppid() };
+    let _ = std::thread::Builder::new()
+        .name("blessh-parent".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // SAFETY: no preconditions.
+            if unsafe { libc::getppid() } != parent {
+                std::process::exit(1);
+            }
+        });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let first = args.get(1).map(String::as_str);
@@ -58,6 +81,9 @@ fn main() {
     };
     if printing {
         default_sigpipe();
+    }
+    if first == Some("scan") {
+        exit_with_parent();
     }
     // macOS asks about Bluetooth for the responsible process; these
     // commands use or check the permission as blessh itself.
@@ -82,7 +108,15 @@ fn main() {
             cli::Cmd::Scan(a) => platform::scan(a),
             cli::Cmd::Proxy(a) => platform::proxy(a),
         },
-        Some("-h") | Some("--help") | Some("help") | None => {
+        None if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) => {
+            let e = std::process::Command::new(std::env::current_exe().unwrap_or("blessh".into()))
+                .arg("scan")
+                .exec();
+            eprintln!("blessh: cannot run blessh scan: {e}");
+            1
+        }
+        None => pick::run(&[]),
+        Some("-h") | Some("--help") | Some("help") => {
             println!("{}", cli::USAGE);
             0
         }
@@ -90,8 +124,9 @@ fn main() {
             println!("blessh {}", env!("CARGO_PKG_VERSION"));
             0
         }
+        Some(_) if !cli::names_server(&args[1..]) => pick::run(&args[1..]),
         Some(_) => {
-            let e = cli::exec_ssh(&args[1..]);
+            let e = cli::exec_ssh(&args[1..], None);
             eprintln!("blessh: cannot run ssh: {e}");
             1
         }

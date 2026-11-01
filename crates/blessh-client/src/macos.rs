@@ -25,7 +25,10 @@ use blessh_core::{
 };
 use log::{info, warn};
 
-use crate::cli::{stop_signal, ProxyArgs, ScanArgs};
+use crate::{
+    cli::{stop_signal, ProxyArgs, ScanArgs},
+    listing::{Printer, Row},
+};
 
 /// How long Bluetooth may take to come up.
 const BLUETOOTH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,20 +47,36 @@ pub fn scan(args: ScanArgs) -> i32 {
     }
 }
 
+/// CoreBluetooth's RSSI when it has none.
+const NO_RSSI: i64 = 127;
+
+/// How long the scan waits for Bluetooth while macOS asks the user for
+/// the permission.
+const PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn scan_sync(args: &ScanArgs) -> Result<()> {
-    let central = Central::new(BLUETOOTH_TIMEOUT)?;
+    let timeout = if corebluetooth::permission() == corebluetooth::Permission::Undecided {
+        eprintln!(
+            "blessh: waiting for Bluetooth permission: answer macOS's prompt on this Mac's screen"
+        );
+        PERMISSION_TIMEOUT
+    } else {
+        BLUETOOTH_TIMEOUT
+    };
+    let central = Central::new(timeout)?;
+    let mut printer = Printer::new(args.format);
     // A server is listed once its advertised name is known; those whose
     // scan response never came are listed at the end with the name
     // CoreBluetooth has cached.
     let mut listed = HashSet::new();
     let mut pending: Vec<(String, String, i64)> = Vec::new();
-    central.scan(Duration::from_secs(args.timeout), |f| {
-        if listed.contains(&f.id) {
+    central.scan(args.duration(), |f| {
+        if listed.contains(&f.id) || f.rssi == NO_RSSI {
             return false;
         }
         match &f.local_name {
             Some(n) => {
-                println!("{}  {n}  rssi={}", f.id, f.rssi);
+                printer.row(&Row::new(n, rssi(f.rssi), &f.id));
                 listed.insert(f.id.clone());
                 pending.retain(|(id, _, _)| *id != f.id);
             }
@@ -72,10 +91,14 @@ fn scan_sync(args: &ScanArgs) -> Result<()> {
         }
         false
     })?;
-    for (id, n, rssi) in pending {
-        println!("{id}  {n}  rssi={rssi}");
+    for (id, n, r) in pending {
+        printer.row(&Row::new(&n, rssi(r), &id));
     }
     Ok(())
+}
+
+fn rssi(r: i64) -> i16 {
+    r.clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }
 
 pub fn proxy(args: ProxyArgs) -> i32 {
@@ -162,21 +185,54 @@ fn known_server(
     }
 }
 
+/// The server on device `id`, which a scan just saw (`--device`):
+/// connected without scanning again when CoreBluetooth knows it.
+fn on_device(central: &Central, id: &str, scan_timeout: Duration) -> io::Result<(Found, String)> {
+    if let Some(c) = connected_server(central, Some(id)) {
+        return Ok(c);
+    }
+    if let Some(found) = central.known(id) {
+        match read_info(central, &found) {
+            Ok(info) => return Ok((found, info)),
+            Err(e) => log::debug!("known device {id}: {e}"),
+        }
+    }
+    let found = scan_for(central, Some(id), scan_timeout)?;
+    let info = read_info(central, &found)?;
+    Ok((found, info))
+}
+
 /// Finds the server, connects and reads INFO. CoreBluetooth calls block,
 /// so this runs off the async runtime.
-fn open(target: Option<String>, scan_timeout: Duration) -> io::Result<(Central, Found, Vec<u16>)> {
+fn open(
+    target: Option<String>,
+    device: Option<String>,
+    scan_timeout: Duration,
+) -> io::Result<(Central, Found, Vec<u16>)> {
     let central = Central::new(BLUETOOTH_TIMEOUT)?;
-    let (found, info) = match connected_server(&central, target.as_deref()) {
-        Some(c) => c,
-        None => match known_server(&central, target.as_deref(), scan_timeout) {
-            Some(k) => k,
-            None => {
-                let found = scan_for(&central, target.as_deref(), scan_timeout)?;
-                let info = read_info(&central, &found)?;
-                (found, info)
-            }
+    let (found, info) = match &device {
+        Some(id) => on_device(&central, id, scan_timeout)?,
+        None => match connected_server(&central, target.as_deref()) {
+            Some(c) => c,
+            None => match known_server(&central, target.as_deref(), scan_timeout) {
+                Some(k) => k,
+                None => {
+                    let found = scan_for(&central, target.as_deref(), scan_timeout)?;
+                    let info = read_info(&central, &found)?;
+                    (found, info)
+                }
+            },
         },
     };
+    if let (Some(id), Some(t)) = (&device, &target) {
+        let n = protocol::info_value(&info, "name").unwrap_or_default();
+        if !name::same(n, t) {
+            central.disconnect(&found.peripheral);
+            return Err(io::Error::other(format!(
+                "{id} is now the server {n:?}, not {t:?}"
+            )));
+        }
+    }
     if let Some(n) = protocol::info_value(&info, "name") {
         crate::cache::put_device(n, &found.id);
     }
@@ -289,9 +345,10 @@ async fn proxy_async(args: ProxyArgs) -> Result<i32> {
     if args.gatt {
         return Err("the GATT stream is not available on macOS yet".into());
     }
-    let (target, scan_timeout) = (args.target.clone(), Duration::from_secs(args.scan_timeout));
+    let (target, device) = (args.target.clone(), args.device.clone());
+    let scan_timeout = Duration::from_secs(args.scan_timeout);
     let (central, found, psms) =
-        tokio::task::spawn_blocking(move || open(target, scan_timeout)).await??;
+        tokio::task::spawn_blocking(move || open(target, device, scan_timeout)).await??;
     let (central, stream, psm) = open_channel(central, &found, &psms, &args).await?;
     eprintln!(
         "blessh: {} {}: l2cap, psm {psm}",

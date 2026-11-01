@@ -128,6 +128,19 @@ out=$(wait_link_down; BLESSH_PROXY_ARGS="--adapter $CLIENT_HCI" timeout 120 "$BI
 [ "$out" = via-wrapper ] || { echo "FAIL: wrapper: $out"; exit 1; }
 grep -q "^blessh-$(echo "$SERVER" | tr -d : | tr 'A-F' 'a-f') " "$T/known_hosts" || { echo "FAIL: wrapper did not set the host key alias"; exit 1; }
 
+echo "== picking the server from blessh's list"
+# The list's scan runs on the client's adapter through BLESSH_SCANNER.
+printf '#!/bin/sh\nexec %s "$@" --adapter %s\n' "$BIN/blessh" "$CLIENT_HCI" > "$T/scanner"
+chmod 755 "$T/scanner"
+wait_link_down
+out=$(BLESSH_SCANNER="$T/scanner" BLESSH_PROXY_ARGS="--adapter $CLIENT_HCI" timeout 150 \
+    python3 "$(dirname "$0")/pick-drive.py" vhci-server "$BIN/blessh" -F /dev/null -i "$T/id" -o IdentitiesOnly=yes \
+    -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$T/known_hosts" "$(id -un)@" 'echo via-list') \
+    || { echo "FAIL: list: $out"; exit 1; }
+echo "$out" | grep -q via-list || { echo "FAIL: list: $out"; exit 1; }
+grep -q "^blessh-vhci-server " "$T/known_hosts" || { echo "FAIL: list did not connect by name"; exit 1; }
+! pgrep -f "blessh scan" > /dev/null || { echo "FAIL: the list's scan still runs"; exit 1; }
+
 echo "== two sessions at once over one link"
 wait_link_down
 run_now 'sleep 4; echo first' > "$T/first.out" 2>&1 &

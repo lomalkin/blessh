@@ -15,8 +15,11 @@ use std::{future::Future, os::unix::process::CommandExt, process::Command};
 
 use clap::{Args, Parser};
 
+use crate::listing::Format;
+
 pub const USAGE: &str = "\
 Usage: blessh [ssh options] [user@]server [command]
+       blessh [ssh options] [user@]
        blessh scan [options]
        blessh proxy [options] <server>
        blessh server enable|disable|status|run
@@ -25,6 +28,10 @@ Runs the system ssh over Bluetooth Low Energy: `server` is the name a
 blessh server advertises or its Bluetooth address (AA:BB:CC:DD:EE:FF).
 Everything else is passed to ssh, together with a ProxyCommand that runs
 `blessh proxy` and a HostKeyAlias for the server's host key.
+
+Without a server, blessh lists the servers in range on a terminal and
+connects to the one whose key you press (1-9, then a-z); 0, q or Esc
+quits. Without a terminal, `blessh` alone is `blessh scan`.
 
 Environment: BLESSH_PROXY_ARGS adds options to `blessh proxy` (for example
 `--adapter hci1` or `--gatt`).
@@ -50,9 +57,22 @@ pub struct ScanArgs {
     /// Bluetooth adapter to use.
     #[arg(long)]
     pub adapter: Option<String>,
-    /// Seconds to scan.
+    /// Seconds to scan; 0 scans until stopped.
     #[arg(long, default_value_t = 10)]
     pub timeout: u64,
+    /// Output format: human (columns), tsv or json (one object per line).
+    #[arg(long, value_enum, default_value_t = Format::Human)]
+    pub format: Format,
+}
+
+impl ScanArgs {
+    /// How long to scan; "until stopped" is a year.
+    pub fn duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(match self.timeout {
+            0 => 365 * 24 * 3600,
+            t => t,
+        })
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -60,6 +80,11 @@ pub struct ProxyArgs {
     /// Server address (AA:BB:CC:DD:EE:FF) or advertised name; omit to use
     /// the first server found.
     pub target: Option<String>,
+    /// Connect to this device (address, or CoreBluetooth identifier on
+    /// macOS) without looking for the server by name, and check that the
+    /// server's INFO names it `target`.
+    #[arg(long, value_name = "ID")]
+    pub device: Option<String>,
     /// Bluetooth adapter to use.
     #[arg(long)]
     pub adapter: Option<String>,
@@ -198,8 +223,27 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Runs ssh with a ProxyCommand through this program; returns only on error.
-pub fn exec_ssh(args: &[String]) -> std::io::Error {
+/// Whether the arguments name a server; without one, blessh lets the user
+/// pick it (`blessh`, `blessh alice@`, `blessh -l alice`).
+pub fn names_server(args: &[String]) -> bool {
+    destination_index(args).is_some_and(|d| !target_of(&args[d]).is_empty())
+}
+
+/// The arguments with `server` as ssh's destination: in place of an empty
+/// one (`alice@` becomes `alice@server`), else appended.
+pub fn with_server(args: &[String], server: &str) -> Vec<String> {
+    let mut args = args.to_vec();
+    match destination_index(&args) {
+        Some(d) => args[d].push_str(server),
+        None => args.push(server.to_owned()),
+    }
+    args
+}
+
+/// Runs ssh with a ProxyCommand through this program; returns only on
+/// error. With `device`, the proxy connects to that device and checks that
+/// it is the server named in the arguments.
+pub fn exec_ssh(args: &[String], device: Option<&str>) -> std::io::Error {
     let Some(dest) = destination_index(args) else {
         return std::io::Error::other(format!("no destination given\n\n{USAGE}"));
     };
@@ -217,7 +261,10 @@ pub fn exec_ssh(args: &[String]) -> std::io::Error {
         } else {
             format!("{extra} ")
         },
-        shell_quote(&target)
+        match device {
+            Some(d) => format!("--device {} {}", shell_quote(d), shell_quote(&target)),
+            None => shell_quote(&target),
+        }
     );
     let mut cmd = Command::new("ssh");
     cmd.args(&args[..dest]);
@@ -230,49 +277,8 @@ pub fn exec_ssh(args: &[String]) -> std::io::Error {
     if !sets_option(args, "Compression") {
         cmd.arg("-o").arg("Compression=yes");
     }
-    // Log in as the current user unless the command line names one.
-    if !names_user(args, dest) {
-        if let Some(user) = current_user() {
-            cmd.arg("-o").arg(format!("User={user}"));
-        }
-    }
     cmd.args(&args[dest..]);
     cmd.exec()
-}
-
-/// Whether the arguments name the remote user: `user@host`, `-l user` or
-/// `-o User=...`.
-fn names_user(args: &[String], dest: usize) -> bool {
-    let d = args[dest].strip_prefix("ssh://").unwrap_or(&args[dest]);
-    if d.contains('@') || sets_option(args, "User") {
-        return true;
-    }
-    args[..dest].iter().enumerate().any(|(i, a)| {
-        a.strip_prefix('-').is_some_and(|flags| {
-            !a.starts_with("--")
-                && flags
-                    .chars()
-                    .take_while(|c| !SSH_OPTIONS_WITH_VALUE.contains(c) || *c == 'l')
-                    .any(|c| c == 'l')
-                && (flags.ends_with('l') && i + 1 < dest || !flags.ends_with('l'))
-        })
-    })
-}
-
-/// The login name of this process's user ($USER, else from the passwd
-/// database).
-fn current_user() -> Option<String> {
-    if let Some(u) = std::env::var_os("USER").filter(|u| !u.is_empty()) {
-        return Some(u.to_string_lossy().into_owned());
-    }
-    // SAFETY: getpwuid returns a pointer to static storage or null.
-    let pw = unsafe { libc::getpwuid(libc::getuid()) };
-    if pw.is_null() {
-        return None;
-    }
-    // SAFETY: pw_name is a valid C string while the struct is.
-    let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
-    Some(name.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -314,16 +320,22 @@ mod tests {
     }
 
     #[test]
-    fn detects_a_named_user() {
-        assert!(names_user(&v(&["alice@pi"]), 0));
-        assert!(names_user(&v(&["ssh://alice@pi"]), 0));
-        assert!(names_user(&v(&["-l", "alice", "pi"]), 2));
-        assert!(names_user(&v(&["-vl", "alice", "pi"]), 2));
-        assert!(names_user(&v(&["-lalice", "pi"]), 1));
-        assert!(names_user(&v(&["-o", "User=alice", "pi"]), 2));
-        assert!(!names_user(&v(&["pi"]), 0));
-        assert!(!names_user(&v(&["-v", "pi", "ls", "-l"]), 1));
-        assert!(!names_user(&v(&["-p", "22", "pi"]), 2));
+    fn server_to_pick() {
+        assert!(names_server(&v(&["pi"])));
+        assert!(names_server(&v(&["-l", "alice", "pi", "ls"])));
+        assert!(!names_server(&v(&[])));
+        assert!(!names_server(&v(&["alice@"])));
+        assert!(!names_server(&v(&["-l", "alice"])));
+        assert!(!names_server(&v(&["-L", "8080:localhost:80"])));
+        assert_eq!(
+            with_server(&v(&["alice@", "ls"]), "pi"),
+            v(&["alice@pi", "ls"])
+        );
+        assert_eq!(
+            with_server(&v(&["-l", "alice"]), "pi"),
+            v(&["-l", "alice", "pi"])
+        );
+        assert_eq!(with_server(&v(&[]), "pi"), v(&["pi"]));
     }
 
     #[test]
