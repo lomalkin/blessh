@@ -1,2 +1,7 @@
 target/
 dist/
+
+# OS crap
+.DS_Store
+Thumbs.db
+
