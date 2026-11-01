@@ -112,6 +112,35 @@ NUC 11 (Ubuntu 24.04, BlueZ 5.72), MacBook Pro with Apple silicon (macOS
 | MacBook → Pi 3 B+ | 20/20 | |
 | MacBook → Pi Zero 2 W | 20/20 | The pair whose channel stalled before the channel handshake (0.1.3) |
 
+### blessh 0.2.5: release builds
+
+The packages and the Homebrew formula of the `blessh-v0.2.5` release, as
+built by CI, on the same machines on 2026-11-01. Sessions as above
+(`e2e-cycles.sh`, sequential and overlapping), then 200 KB through `cat`
+in each direction.
+
+| Client → server | Sessions | 200 KB down / up | Notes |
+|---|---|---|---|
+| Pi 3 B+ → Pi Zero 2 W | 20/20 | 109 s / 117 s | The pair that lost sessions to the grace timer before 0.2.3 |
+| Pi Zero 2 W → Pi 3 B+ | 6/6 | 110 s / 93 s | |
+| Pi 3 B+ → MacBook | 6/6 | 8 s / 11 s | |
+| MacBook → Pi 3 B+ | 6/6 | 14 s / 18 s | |
+| Pi Zero 2 W → MacBook | 6/6 | stops at 96 KiB / 126 s | Downloads to the Pi Zero 2 W stop (64 KiB in an earlier run); see backlog.md |
+| MacBook → Pi Zero 2 W | 6/6 | 38 s / 216 s | |
+| ThinkPad X250 → NUC 11 | 10/10 | 17 s / 39 s | |
+| NUC 11 → ThinkPad X250 | 10/10 | 12 s / 15 s | |
+
+Upgrades tested the same day: Debian packages 0.2.0 → 0.2.1 → … → 0.2.5
+on all four Linux machines; Homebrew from the 0.2.1 formula (binary in
+the Cellar) to 0.2.2 and on to 0.2.5, keeping the Bluetooth permission
+and restarting the server by itself. Clean installs: purge and install on
+three Linux machines; on the Mac `blessh server disable`, uninstall,
+removal of `/etc/blessh` and the stable copy, then install and enable.
+
+The Pi Zero 2 W's controller hung three times during the day under this
+load (LE Set Random Address answered with EBUSY, then command timeouts);
+only a reboot helped.
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
@@ -121,3 +150,4 @@ NUC 11 (Ubuntu 24.04, BlueZ 5.72), MacBook Pro with Apple silicon (macOS
 | 2026-10-26 | Android 11 phone | Android 11 | ble-r3 … ble-r5 | bench servers | pass | Scan finds nothing while location is off (Android holds results back); ble-r5 says so in the scan dialog, not yet checked on the phone. Up to ble-r2 the app crashed after login on servers with an ECDSA host key (sshlib on Android 12 and older); worked around since ble-r3 |
 | 2026-10-26 | Android 8 phone | Android 8 | ble-r3 | bench servers | pass | Scan and BLE login |
 | 2026-10-27 | Android 11 and Android 8 (Huawei P9) phones | Android 11, Android 8 | ble-r6 | bench servers | pass | Login without the client's former sshlib workaround (sshlib 0.6.5); the Android 8 phone also finds servers with location off. Two phones at once: the second was told the server is busy, but the first one's session ended a few seconds later (BlueZ, see docs/protocol.md; servers from 0.2.3 avoid it) |
+| 2026-11-01 | Google Pixel 2 XL | Android 11 | ConnectBot blessh r3 | Pi 3 B+ (by name and by address), Pi Zero 2 W, MacBook; blessh 0.2.5 | pass | L2CAP channel to all; 12/12 sessions, with the app stopped between them. A further 5 to the Pi Zero 2 W: 3/5, lost to the reconnect race in backlog.md. GATT stream (server with `--no-l2cap`): 3/3. Upgrade r1 → r2 → r3 keeps hosts and keys |

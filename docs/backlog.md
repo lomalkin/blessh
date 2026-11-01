@@ -50,12 +50,36 @@ rework (2026-10).
   reconnect. Closing the gap needs a way to
   cancel or hold the disconnect, or the client retrying a channel cut
   right after the handshake.
+  To reproduce: a Pi Zero 2 W server, a client that keeps the link
+  between sessions (ConnectBot blessh); end a session, wait, and start
+  the next one on the same link, stepping the wait from 29 to 33 s in
+  half seconds. A hit shows in the server's journal as
+  `no channel for 30s, disconnecting` and, within about three seconds,
+  the new session ending with `link closed on this side`; the app
+  reports a lost connection. With 0.2.4 (ten seconds) the app's own
+  reconnect hit it without any timing.
+* An Android phone that reconnects to a Pi Zero 2 W server while the
+  previous link is still up (the server keeps it thirty seconds) fails
+  about one session in three: service discovery on the old link hangs
+  for ten seconds, the client retries correctly, reads INFO and opens
+  the channel just as the server's grace timer, decided a moment
+  before, drops the link. Ideas: the server holds the disconnect while
+  bluetoothd shows GATT activity; the client retries a channel that dies
+  before SSH authentication; the app disconnects the link on exit.
+  To reproduce (ConnectBot blessh r3, server 0.2.5): open
+  `blessh://user@<server>`, log in, `exit`, then
+  `adb shell am force-stop io.github.lomalkin.connectbot.blessh` (the
+  link outlives the app) and open the same URI again at once; repeat
+  five times. Failures show in logcat as `Bluetooth service discovery
+  timed out` followed by `the server closed the channel`, and in the
+  server's journal as the grace disconnect above. Servers with faster
+  controllers (Pi 3 B+, macOS) passed every run.
 * The Linux client that joins a link another blessh made takes the PSMs
   from the lock file and reads no INFO; it should read INFO too
   (protocol.md, "Lifetime").
 * Large downloads from a macOS server to a Linux client on a controller
-  without LE Data Length Extension (Pi Zero 2 W) stop at 64 KiB; uploads
-  and interactive sessions work.
+  without LE Data Length Extension (Pi Zero 2 W) stop at 64 or 96 KiB;
+  uploads and interactive sessions work.
 
 ## Distribution
 
