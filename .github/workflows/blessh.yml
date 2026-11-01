@@ -158,7 +158,7 @@ jobs:
   # that macOS keeps the Bluetooth permission across updates; otherwise it
   # is signed ad hoc.
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       HAS_SIGN_KEY: ${{ secrets.BLESSH_SIGN_P12 != '' }}
     steps:
