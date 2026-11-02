@@ -606,9 +606,11 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     // Nor does it restore an advertisement in the controller after the
     // adapter was switched off and on (bluetoothctl, rfkill, a desktop's
     // Bluetooth switch) when the controller uses extended advertising: the
-    // advertisement stays registered but is not on the air.
-    let power_events = adapter.events().await?;
-    let mut powered = true;
+    // advertisement stays registered but is not on the air. bluer ends this
+    // stream when bluetoothd removes any interface of the adapter, which it
+    // does around a power change, so an end counts as one too.
+    let mut power_events: futures::stream::BoxStream<'static, AdapterEvent> =
+        adapter.events().await?.boxed();
     wait_interfaces(&adapter).await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name, args.discoverable).await?);
@@ -639,7 +641,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
             tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
         })
         .collect();
-    tokio::pin!(rx_control, tx_control, adapter_events, power_events);
+    tokio::pin!(rx_control, tx_control, adapter_events);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<u64>();
@@ -671,10 +673,9 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                     return Err(format!("Bluetooth adapter {} was removed", adapter.name()).into());
                 }
             }
-            Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(on))) = power_events.next() => {
-                if on != powered {
-                    powered = on;
-                    // Registered again on the next tick once the adapter is on.
+            ev = power_events.next() => match ev {
+                Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(on))) => {
+                    // Registered again on a tick once the adapter is on.
                     adv = None;
                     if on {
                         info!("adapter {} is on again, advertising again", adapter.name());
@@ -682,7 +683,19 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                         warn!("adapter {} was switched off; waiting for it", adapter.name());
                     }
                 }
-            }
+                Some(_) => {}
+                None => {
+                    debug!("adapter {} changed its interfaces; advertising again", adapter.name());
+                    adv = None;
+                    match adapter.events().await {
+                        Ok(s) => power_events = s.boxed(),
+                        Err(e) => {
+                            warn!("cannot follow adapter {}: {e}", adapter.name());
+                            power_events = futures::stream::pending().boxed();
+                        }
+                    }
+                }
+            },
             ev = rx_control.next() => match ev {
                 Some(CharacteristicControlEvent::Write(req)) => {
                     let addr = req.device_address();
@@ -795,7 +808,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                 }
             }
             _ = tick.tick() => {
-                if adv.is_none() && powered {
+                if adv.is_none() && adapter.is_powered().await.unwrap_or(false) {
                     match advertise(&adapter, &name, args.discoverable).await {
                         Ok(h) => adv = Some(h),
                         Err(e) => debug!("advertising retry failed: {e}"),
