@@ -236,6 +236,23 @@ forwarding, the phone killed or its Bluetooth switched off mid-session.
 * The Pi 3 B+ controller failed twice (hardware error, HCI reset timing
   out) and the Pi Zero 2 W stalled once; each needed a reboot.
 
+### blessh 0.3.1 before release
+
+The fixes for the long session's findings, CI builds on the same
+machines on 2026-11-02 (the phone not available):
+
+* Adapter switched off and on: the servers came back within 3–18 s every
+  time, 24/24: `bluetoothctl power off/on` with 1 and 5 s off and rfkill
+  with 2 s off on the three extended-advertising controllers, power
+  cycles on the Pis.
+* A Linux client to a machine connected to it: the session the other
+  machine holds survives, 15/15 (the Linux PC and laptop both ways, the
+  arm64 board and the laptop both ways, the Pi 3 B+ to the MacBook). The
+  client's own session over that link still fails except to the MacBook
+  (backlog).
+* Sessions with gaps: 77/84; the failures were the Pi Zero 2 W's TX stall
+  (6) and one link lost. Killed clients: 2 cases, next sessions 6/6.
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |

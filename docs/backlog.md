@@ -62,7 +62,27 @@ rework (2026-10).
   and need a reboot (hardware.md, "blessh 0.2.6"). Worth finding out
   whether the phone's 7.5 ms connection interval (the app asks for high
   priority) makes it more likely, and whether the server can notice it
-  (HCI command timeouts in the kernel log) and say so.
+  (HCI command timeouts in the kernel log) and say so. The long test of
+  2026-11-02 (hardware.md) added two more ways the Pi 3 B+ controller
+  fails: a hardware error with HCI Reset timing out, once right after a
+  session as client while its own server advertised, once after power
+  cycles and a bluetoothd restart that left the adapter unpowerable
+  ("Failed to set mode: Authentication Failed").
+* A client cannot open a session over a link the peer made (the peer
+  connected to this machine's own server): the Linux client gets EBUSY
+  for its ATT channel, falls back to bluetoothd after 5 s, and bluetoothd
+  has not resolved the services of a peer that connected to it ("device
+  does not provide the blessh service"); the macOS client fails the same
+  way. Two machines that log in to each other at the same moment hit it.
+  Ideas: open the L2CAP channel directly with the PSM from the channel
+  cache, or have bluetoothd resolve the peer's services and read INFO
+  through it.
+* Typing waits up to 4 s while another session on the same link uploads
+  (laptop with a Realtek controller to the arm64 board: 300 KB up in 77
+  s; between the arm64 board and the PC both ways stay fast). Measure
+  first (btmon during an upload); then perhaps cap the bytes in flight
+  per channel or shrink the socket send buffer, so that channels on one
+  link interleave.
 * Large downloads from a macOS server to a Linux client on a controller
   without LE Data Length Extension (Pi Zero 2 W) stop at 64 or 96 KiB;
   uploads and interactive sessions work.
@@ -92,6 +112,11 @@ rework (2026-10).
   did not help. Seen with Pi 3 B+ and Pi Zero 2 W servers alike; not
   known on other Android versions. A shorter discovery timeout would
   halve the cost; the cause is outside the app.
+* ConnectBot blessh: when link setup fails (GATT status 133, HCI 0x3e)
+  the app scans again instead of retrying the connect, and gives up if
+  the scan does not hear the server within 15 s (1 of 53 sessions in the
+  2026-11-02 test). The Linux client retries link setup three times;
+  the app could retry `connectGatt` once before scanning.
 * `blessh`'s list (docs/client.md, "Choosing a server"):
   * Servers it does not show: one this machine is connected to already,
     and one whose controller does not advertise while another client is
@@ -141,8 +166,15 @@ rework (2026-10).
 * A faster fallback than MTU 64 for such links (MTU 128 worked 2 of 3
   times); the right value may depend on the sender's K-frame size.
 
-* Verify on real radios what btvirt cannot: two client devices at the
-  same time (advertising while connected), phones, CoreBluetooth against
+* A server whose controller uses extended advertising serves one client
+  device at a time: the kernel does not enable the advertising set again
+  after a connection ended it, so a second device finds nothing until
+  the first disconnects (6/6 on the arm64 board; legacy advertising on
+  the Pi 3 B+ does take a second device). The controller can: a second
+  advertisement registered by hand let another device connect. Planned:
+  register the advertisement again when a client connects, on adapters
+  whose MaxAdvLen is above 31 (extended advertising).
+* Verify on real radios what btvirt cannot: phones, CoreBluetooth against
   BlueZ, and the Bookworm residual risk (a phone that answers bluetoothd's
   legacy fallback request on PSM 0x27 with "insufficient encryption" would
   still be asked to pair).
@@ -164,4 +196,9 @@ rework (2026-10).
 
 ## Repository
 
-* Release notes and `docs/releases/` for the first blessh release.
+* `tests/e2e-vhci.sh` on the bench: btvirt (BlueZ 5.72, Linux 6.17)
+  delivers no advertisements between its virtual controllers any more,
+  even with older blessh and after a reboot, so the test only passes when
+  bluetoothd already knows the server. Once it works again, add steps
+  for a server that advertises again after its adapter is switched off
+  and on, and for a client that leaves a peer's link up.
