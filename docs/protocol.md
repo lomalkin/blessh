@@ -26,7 +26,9 @@ for a new implementation.
 A server:
 
 * MUST advertise the service UUID and a name that follows the name rules
-  ([Discovery](#discovery), [Names](#names)).
+  ([Discovery](#discovery), [Names](#names)). It SHOULD advertise without
+  the discoverable flags where the platform allows, unless its
+  administrator asks otherwise.
 * MUST serve the GATT service with the INFO characteristic, readable
   without pairing or encryption, with long reads; INFO MUST contain
   `proto` and `name`, and the keys that describe the transports it offers
@@ -47,8 +49,9 @@ A server:
 
 A client:
 
-* MUST select servers by the service UUID and by name or address, compare
-  names as the name rules say, and ignore INFO keys it does not know.
+* MUST find servers by the service UUID whatever the advertising flags
+  say, select them by name or address, compare names as the name rules
+  say, and ignore INFO keys it does not know.
 * MUST use the L2CAP channels when the server lists them, `chan` names a
   handshake version the client speaks and the platform has L2CAP: try them
   in the listed order, run the handshake, and on a stall go on to the next
@@ -78,6 +81,19 @@ The server advertises the service UUID `5b1e7e00-6d2c-4f4a-9a3e-2c1b0e8f4a10`
 (16-bit list form is not used) and its name as the local name; the
 advertising interval is 400 ms. Clients scan for the UUID and select a
 server by name or by address. Neither is authenticated: the SSH host key is.
+
+A server SHOULD leave the LE General and Limited Discoverable flags out
+of its advertisement (the Flags field then holds only "BR/EDR not
+supported"), so that it stays out of the device lists of system settings,
+where tapping it would only start a pairing that blessh does not use. A
+server MAY advertise as discoverable when its administrator asks for it,
+and MAY be unable to choose (CoreBluetooth sets the flags itself). Being
+left out of those lists hides nothing: the advertisement and its name
+remain public. Clients therefore MUST NOT rely on the flags: they scan
+for the service UUID with an API that reports every advertisement
+(Android's `BluetoothLeScanner`, CoreBluetooth, BlueZ discovery with an
+LE filter, WinRT's advertisement watcher), not with a system device
+discovery that reports discoverable devices only.
 
 ## Names
 

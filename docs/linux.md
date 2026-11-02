@@ -5,31 +5,47 @@ BlueZ. Installation in short: [README](../README.md#installing). The
 macOS server: [macos-server.md](macos-server.md); the `blessh` command on
 every platform: [client.md](client.md).
 
-## Packages
+## Package
 
-Both packages are on the Releases page, `arm64` for 64-bit Raspberry Pi OS
-and Debian on ARM, `amd64` for PCs:
-
-* `blessh-client`: the `blessh` program, client and server in one.
-* `blessh-server`: sets the server up (systemd units, the `_blessh` user,
-  a D-Bus policy, `/etc/blessh/sshd_config`); needs `blessh-client`.
+One package, `blessh`, on the Releases page: `arm64` for 64-bit Raspberry
+Pi OS and Debian on ARM, `amd64` for PCs. It is the client and the
+server, like the Homebrew formula on macOS; the server is off until it is
+turned on. The installer script (README, "Installing") does the same as:
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-sudo apt install ./blessh-client_<version>_arm64.deb ./blessh-server_<version>_arm64.deb
+sudo apt install ./blessh_<version>_arm64.deb
+blessh server enable
 ```
 
-The server package creates the `_blessh` user (allowed only the BlueZ calls the
-daemon needs, through a D-Bus policy), enables and starts
-`blessh-session.socket` and `blessh-server.service`, and prints a table of
-checks (BlueZ version, Bluetooth service and adapter, sshd configuration,
-daemon; each with OK, WARN or FAIL and what to do), the SSH host key
-fingerprint and the login policy BLE sessions get. `sudo dpkg-reconfigure
-blessh-server` prints it again. The fingerprint alone:
+The package installs the program, the systemd units (off), the `_blessh`
+user (allowed only the BlueZ calls the daemon needs, through a D-Bus
+policy; created on every machine, like other packages' system users),
+`/etc/blessh/sshd_config` and `/etc/default/blessh`. A first installation
+prints how to connect and how to turn the server on.
+
+The server needs OpenSSH's server, which the package only suggests, so
+that a machine used as a client does not get one: `sudo apt install
+openssh-server` (it turns on network SSH too; BLE does not need it:
+`sudo systemctl disable --now ssh`). `blessh server enable` refuses
+without it and says so.
+
+`blessh server enable` (it asks for sudo) enables and starts
+`blessh-session.socket` and `blessh-server.service`, then prints what
+`blessh server status` prints: a table of checks (BlueZ version, EATT on
+Bookworm, Bluetooth service and adapters, sshd configuration, the server,
+whether it shows in device lists; each OK, WARN, FAIL or NOTE with what
+to do), the name, the SSH host key fingerprint and the login policy BLE
+sessions get. `blessh server status` checks sshd's view of its
+configuration only as root (`sudo blessh server status`). The fingerprint
+alone:
 
 ```
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
+
+Upgrades restart a server that is on, which ends the active BLE
+sessions, and print its status.
 
 ## Server settings
 
@@ -42,9 +58,20 @@ systemctl restart blessh-server`:
 | `--adapter hci1` | Bluetooth adapter; default: BlueZ's default adapter |
 | `--max-sessions N` | sessions at a time over all transports (default 4; `MaxConnections` in `blessh-session.socket` must allow as many) |
 | `--no-l2cap` | serve the GATT stream only |
+| `--discoverable` | also show the server in the Bluetooth device lists of phones and computers (see below) |
 
-`blessh server run --help` lists them all. `blessh server status` shows
-the name and the state of the units.
+`blessh server run --help` lists them all; `blessh server status` shows
+the result.
+
+## Visibility
+
+The server advertises without the discoverable flags, so the Bluetooth
+settings of phones and computers do not list it: tapping it there would
+only start a pairing, which blessh does not use. blessh clients (`blessh`,
+ConnectBot blessh) scan for the blessh service and find it all the same
+([protocol.md](protocol.md#discovery)). This hides nothing: the
+advertisement and its name are public, and any BLE scanner app shows
+them. `--discoverable` puts the flags back.
 
 ## SSH settings
 
@@ -84,15 +111,18 @@ BLE logins are possible while `blessh-server.service` and
 sudo systemctl stop blessh-server   # until the next boot
 blessh server disable               # also at boot (asks for sudo)
 blessh server enable                # on again
-sudo apt purge blessh-server        # remove; the client stays
+sudo apt purge blessh               # remove the client and the server
 ```
 
-Upgrades restart the daemon, which ends the active BLE sessions.
+Upgrades restart a server that is on, which ends the active BLE sessions.
 
 ## Requirements
 
-* BlueZ 5.55 or later (tested with 5.66, 5.72 and 5.82), systemd, the
-  OpenSSH server package (only the `sshd` binary is used).
+* BlueZ 5.55 or later (tested with 5.66, 5.72, 5.82 and 5.85), systemd;
+  for the server, the OpenSSH server package (only the `sshd` binary is
+  used).
+* A 64-bit system (`arm64`, `amd64`); 32-bit Raspberry Pi OS is not
+  supported yet.
 * A kernel with LE L2CAP connection-oriented channels: any current one.
   Before Linux 6.10 the kernel grants receive credits without regard to
   the socket buffer, which only matters when sshd stops reading.

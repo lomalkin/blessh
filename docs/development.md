@@ -11,7 +11,8 @@ crates/blessh-core     protocol code without I/O, shared by every platform
 crates/blessh-ble      Bluetooth layer: BlueZ (Linux) and CoreBluetooth (macOS)
 crates/blessh-server   the server as a library (`blessh server ...`)
 crates/blessh-client   the one program, blessh: client, and the server commands
-packaging/linux        Debian package: systemd units, sshd_config, maintainer scripts
+packaging/linux        Debian package: systemd units, sshd_config, maintainer scripts,
+                       the installer script
 packaging/macos        Info.plist, the sshd launchd job, tarball and signing
 packaging/homebrew     the formula template for the tap
 tests/                 end-to-end tests, fuzzing, package tests
@@ -27,7 +28,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings
 cargo test                              # protocol, relay, client and server unit tests
 cargo build && tests/e2e-loopback.sh    # ssh ↔ simulated BLE ↔ sshd -i, no radio needed
 tests/e2e-vhci.sh                       # both transports over BlueZ with btvirt (root; testing.md)
-tests/docker/build-deb.sh               # the Debian packages, in a Debian container, into dist/
+tests/docker/build-deb.sh               # the Debian package, in a Debian container, into dist/
 tests/docker/test-package.sh            # install, configuration checks and purge in a clean Debian
 tests/e2e-cycles.sh <server>            # many short sessions against a server nearby
 ```
@@ -64,7 +65,10 @@ git tag blessh-vX.Y.Z && git push origin blessh-vX.Y.Z
 ```
 
 CI (`.github/workflows/blessh.yml`) builds the Debian packages and the
-macOS tarball and publishes a GitHub release with `SHA256SUMS`, the notes
+macOS tarball, renders the installer script `install.sh` with the
+release's version and checksums (`packaging/linux/render-install.sh`;
+README links it as `releases/latest/download/install.sh`, so every
+release must carry it) and publishes a GitHub release with `SHA256SUMS`, the notes
 from `docs/releases/<tag>.md` if present and the commit subjects since the
 previous tag. Untagged CI builds are versioned `X.Y.Z~ciN`, which sorts
 before the `X.Y.Z` release.
@@ -100,7 +104,7 @@ certificate makes every Mac ask for the Bluetooth permission once more),
 then remove the directory.
 
 Without CI, `ci/local/build.sh blessh-vX.Y.Z` runs the same checks and
-builds the same Debian packages in docker on any x86_64 Linux host, and
-writes the release notes next to them; publish with `gh release create
-blessh-vX.Y.Z <out>/*.deb <out>/SHA256SUMS --title "blessh X.Y.Z"
---notes-file <out>/notes.md`.
+builds the same Debian packages and `install.sh` in docker on any x86_64
+Linux host, and writes the release notes next to them; publish with `gh
+release create blessh-vX.Y.Z <out>/*.deb <out>/install.sh
+<out>/SHA256SUMS --title "blessh X.Y.Z" --notes-file <out>/notes.md`.

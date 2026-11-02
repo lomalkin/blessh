@@ -71,7 +71,14 @@ rework (2026-10).
 
 * An APT repository (for example on GitHub Pages), so that Debian and
   Raspberry Pi OS users get updates with `apt upgrade` instead of
-  downloading packages from Releases.
+  downloading packages from Releases; signed, which the installer script
+  cannot be. The installer would then add the repository instead of
+  installing a downloaded package, and the package could recommend
+  `openssh-server` instead of only suggesting it (now the server's
+  machine has to install it by hand, to keep it off clients, since apt
+  installs recommended packages).
+* A package for 32-bit Raspberry Pi OS (`armhf`); the installer refuses it
+  for now.
 * A short animation of a session in the README.
 
 ## Clients

@@ -29,8 +29,8 @@ authentication and encryption.
   `Include` line in `/etc/blessh/sshd_config`.
 * Use BlueZ 5.76 or later (Debian trixie) where the GATT stream is in use.
   With older BlueZ, other BLE devices nearby can break an active GATT
-  session or observe its encrypted traffic and keystroke timing (S-2); the
-  installer warns about this. L2CAP channels are not affected.
+  session or observe its encrypted traffic and keystroke timing (S-2);
+  `blessh server status` warns about this. L2CAP channels are not affected.
 
 ## Threat model
 
@@ -77,7 +77,7 @@ public key, to log its fingerprint.
 | ID | Severity | Status | Summary |
 |---|---|---|---|
 | S-1 | Medium | Fixed (0.1.3) | Journal entries could be forged through CLOSE messages |
-| S-2 | Medium | Documented, installer warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
+| S-2 | Medium | Documented, `blessh server status` warns (BlueZ < 5.76) | Other BLE devices can inject into or observe the active session |
 | S-3 | Medium | Partly mitigated (0.1.3), rest accepted | One client can occupy the only session slot |
 | S-4 | Medium | Accepted; public keys only are recommended | Password guessing over BLE is not rate limited by source |
 | S-5 | Low | Fixed (0.1.3) | A compromised daemon controls all of BlueZ over D-Bus |
@@ -124,8 +124,8 @@ does not call Acquire* for it.
 Affected: Bookworm (5.66). Not affected: Trixie (5.82). No CVE was found
 for the upstream fixes, which went in as ordinary bug fixes; Debian
 bookworm's bluez 5.66-1+deb12u2 does not carry them.
-Decision: BlueZ ≥ 5.76 is recommended (Recommendations) and the installer warns on
-older versions. Not done: disconnecting other LE devices during a session
+Decision: BlueZ ≥ 5.76 is recommended (Recommendations) and `blessh server
+status` (also printed by `enable`) warns on older versions. Not done: disconnecting other LE devices during a session
 (it would also cut unrelated devices) and keystroke timing obfuscation in
 the client (it costs bandwidth on a slow link); the exposure is accepted
 with this documentation.
@@ -190,7 +190,10 @@ over the network with the same rights anyway.
 
 The advertisement and the INFO characteristic contain the host name, which
 anyone nearby can read. Use `--name` in `/etc/default/blessh` to
-advertise something else; the installer says so on first installation.
+advertise something else; `blessh server status` says so. Since 0.3.0 the
+Linux server stays out of the Bluetooth device lists of phones and
+computers by default, which hides nothing from a scanner
+([linux.md](linux.md#visibility)).
 
 ### S-8 Weak identities in the audit log
 
@@ -222,8 +225,8 @@ own host key. Passwords were allowed over BLE even where the administrator
 had turned them off for network SSH, and `AllowUsers`, `Match` blocks or
 drop-ins in `sshd_config.d` did not apply; nothing pointed this out. Fixed
 in 0.2.0: `/etc/blessh/sshd_config` only includes `/etc/ssh/sshd_config`,
-the system host keys are used, and the installer prints the resulting
-policy (passwords, root login, allowed users). Settings for BLE alone can
+the system host keys are used, and `blessh server status` prints the
+resulting policy (passwords, root login, allowed users). Settings for BLE alone can
 go above the `Include`. `tests/e2e-package.sh` checks this in CI.
 
 ## Verification

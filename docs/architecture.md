@@ -95,7 +95,9 @@ packaging/homebrew     the formula template for the tap
 web/                   web client (planned)
 ```
 
-On Linux the daemon runs as `_blessh` with a D-Bus policy that allows only
+On Linux one Debian package, `blessh`, holds the program and the server's
+systemd units, off until `blessh server enable`. The daemon runs as
+`_blessh` with a D-Bus policy that allows only
 the BlueZ calls it makes, and a hardened systemd unit. It registers the
 GATT service and the advertisement with bluetoothd and opens the L2CAP
 listener directly in the kernel (no privilege is needed for dynamic PSMs).

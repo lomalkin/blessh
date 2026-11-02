@@ -54,18 +54,44 @@ have to be on. Details: [docs/macos-server.md](docs/macos-server.md).
 
 ## Debian, Ubuntu, Raspberry Pi OS
 
-Download the packages for your architecture (`arm64` or `amd64`) and
-`SHA256SUMS` from [Releases](https://github.com/lomalkin/blessh/releases),
-then:
+One command installs the latest release for the machine (64-bit: `arm64`
+or `amd64`). The server and the client, with the server on, for a
+Raspberry Pi or a PC to log in to:
+
+```
+curl -fsSL https://github.com/lomalkin/blessh/releases/latest/download/install.sh | sh -s -- --server
+```
+
+The client only:
+
+```
+curl -fsSL https://github.com/lomalkin/blessh/releases/latest/download/install.sh | sh
+```
+
+With wget, `wget -qO- <the same URL> | sh` (and `-s -- --server`). The
+script checks the package against the checksum it carries and installs
+it with apt; running it again installs the latest release over what is
+there. To read it first, download `install.sh` from
+[Releases](https://github.com/lomalkin/blessh/releases) and run `sh
+install.sh` or `sh install.sh --server`.
+
+The server needs OpenSSH's server (`sudo apt install openssh-server`,
+already there on most Raspberry Pi OS images); the script stops before
+installing anything if it is missing, and says so. Installing it turns
+on network SSH as well, which BLE does not need (`sudo systemctl disable
+--now ssh`).
+
+By hand: download `blessh_<version>_<arch>.deb` and `SHA256SUMS` from
+[Releases](https://github.com/lomalkin/blessh/releases), then
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-sudo apt install ./blessh-client_<version>_<arch>.deb    # client
-sudo apt install ./blessh-server_<version>_<arch>.deb    # server, after the client
+sudo apt install ./blessh_<version>_<arch>.deb
+blessh server enable     # the server is off until then; prints its checks
 ```
 
-The server starts right away and at every boot; the installer prints a
-table of checks and the host key fingerprint. Details:
+The server is hidden from the Bluetooth device lists of phones and
+computers; blessh clients find it. Details:
 [docs/linux.md](docs/linux.md).
 
 # Usage
@@ -98,6 +124,7 @@ More: [docs/client.md](docs/client.md).
 | Server name | `/etc/hostname`, or `--name` in `/etc/default/blessh` | the computer's name, or `/etc/blessh/name` |
 | SSH settings for BLE only | above the `Include` in `/etc/blessh/sshd_config` | same |
 | Server options | `BLESSH_ARGS` in `/etc/default/blessh` | — |
+| Shown in Bluetooth device lists | no; `--discoverable` in `BLESSH_ARGS` shows it | always (macOS decides) |
 | Server state | `blessh server status` | `blessh server status` |
 | Server log | `journalctl -u blessh-server -u 'blessh-session@*'` | `$(brew --prefix)/var/log/blessh.log` |
 | Client cache | `~/.cache/blessh/` | `~/.cache/blessh/` |

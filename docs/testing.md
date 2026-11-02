@@ -17,8 +17,8 @@ not done until these pass.
 | OpenSSH ↔ BleStream ↔ `sshd -i`, MTU 20/185/512, packet reordering, 300 KB each way, PTY; session socket with `blessh server session` | `tests/e2e-loopback.sh` |
 | Licences, sources, RustSec advisories (main and fuzz crate) | `cargo deny check` (`deny.toml`) |
 | Fuzzing smoke test, 30 s per target | job `fuzz-smoke` (`cargo +nightly fuzz run --fuzz-dir tests/fuzz …`) |
-| Packages for arm64 and amd64 (both `blessh-server` and `blessh-client`) | job `deb`; locally `tests/docker/build-deb.sh` |
-| Packages in clean bookworm and trixie: BLE sessions get the system SSH configuration, the client runs, purge | job `package` (`tests/e2e-package.sh`; locally `tests/docker/test-package.sh`) |
+| The package `blessh` for arm64 and amd64 | job `deb`; locally `tests/docker/build-deb.sh` |
+| The package in clean bookworm and trixie, installed by the installer script (wrong checksum, `--server` without sshd, unknown option refused): the server stays off until enabled, BLE sessions get the system SSH configuration, `blessh server status`, the client runs, purge | job `package` (`tests/e2e-package.sh`; locally `tests/docker/test-package.sh`) |
 | macOS build, unit tests and the tarball with the launchd jobs | job `macos` |
 | Protocol state machine (Kotlin, shared test vectors) | `BleStreamLinkTest` in the ConnectBot fork CI |
 
@@ -55,14 +55,16 @@ each bench server, from the installation of the release candidate.
 Server:
 
 ```
-sudo apt install ./blessh-client_<version>_<arch>.deb ./blessh-server_<version>_<arch>.deb
+sudo apt install ./blessh_<version>_<arch>.deb
+blessh server enable
 ```
 
-The output shows the SSH host key fingerprint (the system's, the same as
-for network SSH: `256 SHA256:… root@<host> (ED25519)`), note it, and the
-login policy BLE sessions get from `/etc/ssh/sshd_config` (passwords, root
-login, allowed users). If Bluetooth is off, the
-installer says so and how to switch it on. Then check:
+or the installer script with `--server` (README, "Installing"). `enable`
+prints the SSH host key fingerprint (the system's, the same as for network
+SSH: `256 SHA256:… root@<host> (ED25519)`), note it, and the login policy
+BLE sessions get from `/etc/ssh/sshd_config` (passwords, root login,
+allowed users). If Bluetooth is off, its checks say so and how to switch
+it on. Then check:
 
 ```
 systemctl status blessh-server.service blessh-session.socket
@@ -82,24 +84,23 @@ installs next to a Play Store ConnectBot):
 
 1. Hosts → **+** → protocol **ble** → **Scan for Bluetooth LE servers**,
    allow "Nearby devices", pick the server, enter the user name, save.
-2. Tap the host, compare the fingerprint with the one from the installer,
-   log in.
+2. Tap the host, compare the fingerprint with the one `blessh server
+   enable` printed, log in.
 
 Desktop Linux client (optional):
 
 ```
-sudo apt install ./blessh-client_<version>_<arch>.deb
-blessh scan
-blessh <user>@<name>
+sudo apt install ./blessh_<version>_<arch>.deb
+blessh
 ```
 
 ## Cases
 
 | ID | Case | Pass criteria |
 |---|---|---|
-| S1 | Install | Package installs, fingerprint and login policy printed, both units active, journal shows `ready` |
-| S2 | Discovery | The server appears in the client's scan |
-| S3 | Login | First connect shows the installer's fingerprint; logins succeed and fail as over network SSH (key login; password login only where the system allows it) |
+| S1 | Install | Package installs with the server off; `blessh server enable` prints the fingerprint and login policy, both units active, journal shows `ready` |
+| S2 | Discovery | The server appears in the client's scan, and not in the phone's Bluetooth settings (unless `--discoverable`) |
+| S3 | Login | First connect shows the fingerprint `blessh server enable` printed; logins succeed and fail as over network SSH (key login; password login only where the system allows it) |
 | S4 | Full-screen programs | `htop`, `vim` or `nano`, `tmux` draw and respond correctly |
 | S5 | Window resize | Rotating the phone (or resizing the terminal) resizes the remote terminal (`stty size`) |
 | S6 | Bulk output | `cat /usr/share/common-licenses/GPL-3` or `dmesg` finishes; Ctrl+C during long output stops it |

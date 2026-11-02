@@ -67,6 +67,15 @@ server's name; LocalHostName and the name DHCP hands out are not used.
 `/etc/blessh/name` sets another name. Names follow host name rules
 ([client.md](client.md#server-names)).
 
+## Visibility
+
+Unlike the Linux server, the macOS server also shows in the Bluetooth
+device lists of phones and computers nearby: CoreBluetooth sets the
+advertisement's discoverable flags itself, and no option changes that
+(`blessh server status` says so). Tapping it in such a list only starts a
+pairing, which blessh does not use. blessh clients find servers by their
+service either way ([protocol.md](protocol.md#discovery)).
+
 ## Logs
 
 The server's log is `$(brew --prefix)/var/log/blessh.log`: every session
