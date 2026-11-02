@@ -252,6 +252,11 @@ async fn find(
                 .flatten()
                 .unwrap_or_default()
                 .contains(&SERVICE_UUID);
+            // Heard in this scan, or connected: bluetoothd also keeps
+            // devices from earlier scans with their service UUIDs, for
+            // example a server that advertised under another address once.
+            let heard = dev.rssi().await.ok().flatten().is_some()
+                || dev.is_connected().await.unwrap_or(false);
             let name = dev.name().await.ok().flatten().unwrap_or_default();
             let alias = dev.alias().await.unwrap_or_default();
             // bluetoothd forgets the UUIDs a device advertised when a link
@@ -261,9 +266,8 @@ async fn find(
             // its INFO tells.
             let named = list.is_none()
                 && target.is_some_and(|t| name::same(t, &name) || name::same(t, &alias))
-                && (dev.rssi().await.ok().flatten().is_some()
-                    || dev.is_connected().await.unwrap_or(false));
-            if !advertises && !target_addr && !named {
+                && heard;
+            if !is_candidate(advertises, heard, target_addr, named) {
                 continue;
             }
             if !seen.iter().any(|(a, _)| *a == addr) {
@@ -313,6 +317,13 @@ async fn find(
             }
         }
     }
+}
+
+/// Whether a device bluetoothd knows can be the server: the address asked
+/// for, a device with the name asked for that is in range, or one heard
+/// advertising the service in this scan.
+fn is_candidate(advertises: bool, heard: bool, target_addr: bool, named: bool) -> bool {
+    target_addr || named || (advertises && heard)
 }
 
 type Discovery = std::pin::Pin<Box<dyn futures::Stream<Item = AdapterEvent> + Send>>;
@@ -632,13 +643,21 @@ async fn proxy_async(args: ProxyArgs) -> Result<i32> {
     };
     let dev = found.dev.clone();
     let addr = dev.address();
+    // A link that is up before this client makes one, and that no other
+    // blessh shares, belongs to someone else: the peer connected to this
+    // machine's own server, or another program. Taking it down on the way
+    // out would end their sessions.
+    let foreign =
+        found.link.is_none() && dev.is_connected().await.unwrap_or(false) && !others_use(addr);
     let lock = DeviceLock::shared(addr).await;
     info!("connecting to {addr}");
     let result = session(local, found, &args, &lock).await;
     if args.keep_link {
         tokio::time::sleep(KEEP_LINK).await;
-    } else if lock.last_user() && dev.is_connected().await.unwrap_or(false) {
+    } else if lock.last_user() && !foreign && dev.is_connected().await.unwrap_or(false) {
         let _ = dev.disconnect().await;
+    } else if foreign {
+        debug!("{addr}: leaving up the link this client did not make");
     }
     result
 }
@@ -983,7 +1002,19 @@ async fn relay_gatt<T: PacketTx>(mut link: Link, mut rx: GattRx, mut tx: T) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::eatt_channels;
+    use super::{eatt_channels, is_candidate};
+
+    #[test]
+    fn candidates() {
+        // In range and advertising the service.
+        assert!(is_candidate(true, true, false, false));
+        // Known from an earlier scan, not heard now: not a server in range.
+        assert!(!is_candidate(true, false, false, false));
+        // Asked for by address, or in range under the name asked for.
+        assert!(is_candidate(false, false, true, false));
+        assert!(is_candidate(false, true, false, true));
+        assert!(!is_candidate(false, true, false, false));
+    }
 
     #[test]
     fn reads_gatt_channels() {
