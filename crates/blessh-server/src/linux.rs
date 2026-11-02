@@ -33,7 +33,8 @@ use bluer::{
         CharacteristicReader, CharacteristicWriter,
     },
     l2cap::{SocketAddr, Stream, StreamListener},
-    Adapter, Address, AddressType, DeviceEvent, DeviceProperty, SessionEvent,
+    Adapter, AdapterEvent, AdapterProperty, Address, AddressType, DeviceEvent, DeviceProperty,
+    SessionEvent,
 };
 use clap::Parser;
 use futures::{FutureExt, StreamExt};
@@ -602,6 +603,12 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
     // BlueZ drops the registrations when the adapter goes away (unplugged,
     // reset by the USB stack) and does not restore them when it comes back.
     let adapter_events = session.events().await?;
+    // Nor does it restore an advertisement in the controller after the
+    // adapter was switched off and on (bluetoothctl, rfkill, a desktop's
+    // Bluetooth switch) when the controller uses extended advertising: the
+    // advertisement stays registered but is not on the air.
+    let power_events = adapter.events().await?;
+    let mut powered = true;
     wait_interfaces(&adapter).await?;
     let _app = adapter.serve_gatt_application(app).await?;
     let mut adv = Some(advertise(&adapter, &name, args.discoverable).await?);
@@ -632,7 +639,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
             tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
         })
         .collect();
-    tokio::pin!(rx_control, tx_control, adapter_events);
+    tokio::pin!(rx_control, tx_control, adapter_events, power_events);
     let handshake_timeout = Duration::from_secs(args.handshake_timeout);
     let mut pending = Pending::new();
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<u64>();
@@ -662,6 +669,18 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                     // Exit with an error: systemd restarts the daemon, which
                     // waits for the adapter and registers again.
                     return Err(format!("Bluetooth adapter {} was removed", adapter.name()).into());
+                }
+            }
+            Some(AdapterEvent::PropertyChanged(AdapterProperty::Powered(on))) = power_events.next() => {
+                if on != powered {
+                    powered = on;
+                    // Registered again on the next tick once the adapter is on.
+                    adv = None;
+                    if on {
+                        info!("adapter {} is on again, advertising again", adapter.name());
+                    } else {
+                        warn!("adapter {} was switched off; waiting for it", adapter.name());
+                    }
                 }
             }
             ev = rx_control.next() => match ev {
@@ -776,7 +795,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                 }
             }
             _ = tick.tick() => {
-                if adv.is_none() {
+                if adv.is_none() && powered {
                     match advertise(&adapter, &name, args.discoverable).await {
                         Ok(h) => adv = Some(h),
                         Err(e) => debug!("advertising retry failed: {e}"),
