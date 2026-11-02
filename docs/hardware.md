@@ -178,6 +178,34 @@ scan's processes); 11 of 12 eight-second scans named the expected server
 appearing 0.3 to 4 s after the scan started; a direct `blessh` session
 from the Pi Zero 2 W to the Pi 3 B+ took 7.5 to 10 s.
 
+### blessh 0.3.0 before release
+
+The one package `blessh` and its installer, on 2026-11-02, on the Pi 3 B+
+(BlueZ 5.82), the Pi Zero 2 W (5.66), the Linux laptop (5.85) and the
+Linux PC (5.72), and the CI build of the macOS program on the MacBook.
+
+* Installation: on all four Linux machines the old packages purged, then
+  `install.sh --server` with a local build: the server on, its checks
+  printed, and `install.sh` refused to install over the old packages
+  before they were purged (dpkg's file conflict). Then the CI build over
+  it: the upgrade restarted the running server and printed its status;
+  running the installer again changed nothing and kept the server on.
+  `disable` and `enable` round trips, `status` as a user (SSH checks
+  marked as needing sudo) and as root.
+* Visibility: the Linux servers no longer appear in the Android 11
+  device picker (after Bluetooth restarted on the phone; it lists devices
+  it found before), the MacBook does; with `--discoverable` the Pi 3 B+
+  appears again. ConnectBot blessh r4 connects to the hidden servers
+  (2/2 before, 9/9 to the three home servers after).
+* CLI, five sequential and five overlapping sessions per pair, Linux to
+  Linux at both locations and the MacBook to and from the Pi 3 B+: 60/60
+  with the CI build (24/24 of three each with the local build); 200 KB
+  each way on every pair, 101 to 120 s between the Pis, 8 to 17 s
+  otherwise.
+* The server list: 18/18 sessions picked by a key; 17 of 18 eight-second
+  scans named the expected server (the MacBook missed the Pi 3 B+ once,
+  as before).
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
