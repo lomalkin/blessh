@@ -7,6 +7,8 @@ SSH over Bluetooth Low Energy: `blessh alice@my-pi` from a laptop, with no
 pairing, no network and no IP address to know. One program, `blessh`, is
 the client and the server, on Linux and macOS.
 
+![blessh lists the servers in range; a key press opens an SSH session on a Raspberry Pi](docs/demo/blessh.gif)
+
 ## Principles
 
 * **No pairing.** The BLE link is neither paired nor encrypted; SSH does

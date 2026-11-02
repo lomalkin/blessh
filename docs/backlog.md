@@ -79,7 +79,6 @@ rework (2026-10).
   installs recommended packages).
 * A package for 32-bit Raspberry Pi OS (`armhf`); the installer refuses it
   for now.
-* A short animation of a session in the README.
 
 ## Clients
 
