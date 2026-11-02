@@ -206,6 +206,36 @@ Linux PC (5.72), and the CI build of the macOS program on the MacBook.
   scans named the expected server (the MacBook missed the Pi 3 B+ once,
   as before).
 
+### blessh 0.3.0 and ConnectBot blessh r4: long session
+
+Six hours on 2026-11-02 with the published 0.3.0 (installed with
+`install.sh --server` and `brew upgrade`) on two clusters: an arm64 board
+with a MediaTek controller (Debian 13, BlueZ 5.82), the Linux laptop
+(Realtek, 5.85) and the Linux PC (Intel, 5.72); the Pi 3 B+, the Pi Zero
+2 W, the MacBook and the Android 11 phone with r4. Scenarios: sessions
+with gaps of 0–70 s around the 30 s grace period, 75-minute interactive
+sessions with bulk transfers next to them, 30-minute silent sessions,
+several sessions per link and the session limit, clients killed in the
+middle, adapter power cycles and Bluetooth restarts on servers, port
+forwarding, the phone killed or its Bluetooth switched off mid-session.
+
+* No session dropped on its own; 303 of 322 sessions with gaps, every
+  failure explained (controller failures on the Pis, a stale cached
+  device). Killed clients: the server ended the session within 2 s and
+  the next session worked, 45/45. Phone: 39/45 with gaps (1 failed link
+  setup, 5 during the Pi Zero 2 W's TX stall), 20/20 in the other phone
+  scenarios.
+* Systematic problems found, to fix in code: after the adapter is
+  switched off and on, a server on a controller with extended advertising
+  stays invisible until restarted; a Linux client that exits disconnects
+  a link the peer made, ending the peer's session to this machine's
+  server, and neither client can open a session over such a link; the
+  Linux client may select a stale cached device of the same name; a
+  server with extended advertising takes one client device at a time;
+  typing waits up to 4 s while another session on the link uploads.
+* The Pi 3 B+ controller failed twice (hardware error, HCI reset timing
+  out) and the Pi Zero 2 W stalled once; each needed a reboot.
+
 ## Clients
 
 | Date | Client | OS | App build | Server | Result | Notes |
