@@ -169,15 +169,26 @@ fn spawn_scanner() -> io::Result<Child> {
     Ok(child)
 }
 
-/// Ends the scanner and waits for it; its exit code if it had ended.
-fn stop_scanner(child: &mut Child) -> Option<i32> {
-    let ended = child.try_wait().ok().flatten();
-    if ended.is_none() {
+/// Ends the scanner and waits for it.
+fn stop_scanner(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
         kill_scanner();
     }
-    let status = ended.or_else(|| child.wait().ok());
+    let _ = child.wait();
     SCANNER.store(0, Ordering::SeqCst);
-    ended.and(status).map(|s| s.code().unwrap_or(1))
+}
+
+/// Waits for a scanner that closed its output, so it is ending by
+/// itself; its exit code, and 1 if that is 0 (a scan without end should
+/// not end).
+fn scanner_code(child: &mut Child) -> i32 {
+    let code = child.wait().map_or(1, |s| s.code().unwrap_or(1));
+    SCANNER.store(0, Ordering::SeqCst);
+    if code == 0 {
+        1
+    } else {
+        code
+    }
 }
 
 /// Whether more input arrives within `ms`.
@@ -296,10 +307,7 @@ fn pick(args: &[String], style: &Style, child: &mut Child) -> i32 {
                 Ok(n) if n > 0 => pending.extend_from_slice(&buf[..n]),
                 _ => {
                     // The scanner ended: it said why on stderr.
-                    return match stop_scanner(child) {
-                        Some(0) | None => 1,
-                        Some(code) => code,
-                    };
+                    return scanner_code(child);
                 }
             }
             while let Some(end) = pending.iter().position(|&b| b == b'\n') {
