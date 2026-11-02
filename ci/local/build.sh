@@ -34,14 +34,13 @@ docker run --rm -e HOME=/root -v "$src:/src" -v "$BUILD_DIR/cargo-registry:/opt/
   tests/e2e-loopback.sh
   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
   for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-    for p in blessh-server blessh-client; do
-      cargo deb -p \$p --target \$t --deb-version $VER
-    done
+    cargo deb -p blessh-client --target \$t --deb-version $VER
   done
 "
 
 cp "$src"/target/*/debian/*.deb "$OUT"/
-(cd "$OUT" && sha256sum *.deb > SHA256SUMS && cat SHA256SUMS)
+"$src/packaging/linux/render-install.sh" "$OUT" > "$OUT/install.sh"
+(cd "$OUT" && sha256sum *.deb install.sh > SHA256SUMS && cat SHA256SUMS)
 
 # Release notes as the CI release job writes them.
 prev=$(git -C "$src" describe --tags --match 'blessh-v*' --abbrev=0 "$REF^" 2>/dev/null || true)
