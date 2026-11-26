@@ -409,7 +409,13 @@ where
             }
         }
         if state.local_done && state.all_acked() && state.unsent() == 0 && wbuf.is_empty() {
-            let close = encode_close(CLOSE_NORMAL, "");
+            // A last ACK, so the peer knows everything arrived, then CLOSE.
+            let mut close = Vec::new();
+            if state.received > state.ack_told {
+                close.extend(encode_ack(state.received));
+                state.ack_told = state.received;
+            }
+            close.extend(encode_close(CLOSE_NORMAL, ""));
             let _ = cw.write_all(&close).await;
             let _ = cw.flush().await;
             return Ended::Local;
