@@ -8,4 +8,5 @@ pub mod logging;
 pub mod name;
 pub mod protocol;
 pub mod relay;
+pub mod resume;
 pub mod session;

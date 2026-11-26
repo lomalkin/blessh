@@ -19,7 +19,7 @@ const BUFFER: usize = 16384;
 /// EAGAIN for ever while poll still reports the socket writable, and the
 /// relay spins without sending anything (seen on a Raspberry Pi 3 B, 27-byte
 /// LE buffers, after a 16 KB burst of output). Small SDUs always fit.
-const MAX_PEER_WRITE: usize = 1024;
+pub(crate) const MAX_PEER_WRITE: usize = 1024;
 
 /// The front of `buf`, at most `max` bytes, as one contiguous slice.
 fn head(buf: &VecDeque<u8>, max: usize) -> &[u8] {

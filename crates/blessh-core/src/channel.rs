@@ -33,10 +33,30 @@ pub const REFUSED: u8 = 1;
 
 /// Option in a reply: UTF-8 text saying why the session is refused.
 pub const OPT_REASON: u8 = 1;
+/// Option in a hello: the client wants a resumable session; the value is
+/// its replay buffer size (u32 LE). See [`crate::resume`].
+pub const OPT_RESUMABLE: u8 = 2;
+/// Option in a hello: resume a session; token (16 bytes), then the bytes
+/// the client received from the server (u64 LE).
+pub const OPT_RESUME: u8 = 3;
+/// Option in an accepted reply: the session is resumable; token (16
+/// bytes), the server's replay buffer size (u32 LE), the bytes the server
+/// received from the client (u64 LE). The channel then carries records.
+pub const OPT_SESSION: u8 = 4;
+/// Option in a refused reply, empty: the session cannot be resumed.
+pub const OPT_RESUME_FAILED: u8 = 5;
 
 /// Options: type and value, each value at most 255 bytes. Receivers ignore
 /// types they do not know.
 pub type Options = Vec<(u8, Vec<u8>)>;
+
+/// The value of the first option of type `t`.
+pub fn option(options: &Options, t: u8) -> Option<&[u8]> {
+    options
+        .iter()
+        .find(|(k, _)| *k == t)
+        .map(|(_, v)| v.as_slice())
+}
 
 fn encode_options(options: &Options) -> Vec<u8> {
     let mut out = Vec::new();
@@ -130,6 +150,9 @@ pub fn probe_bytes(len: usize) -> Vec<u8> {
 pub enum ClientError {
     /// The server refused the session; the channel works.
     Refused(String),
+    /// The server cannot resume the session asked for (unknown or expired
+    /// token, or an offset it no longer holds); a fresh session may work.
+    CannotResume(String),
     /// The echo stopped coming: the channel does not carry data reliably.
     Stalled {
         echoed: usize,
@@ -144,6 +167,7 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(r) => write!(f, "server refused the session: {r}"),
+            Self::CannotResume(r) => write!(f, "server cannot resume the session: {r}"),
             Self::Stalled { echoed, expected } => {
                 write!(
                     f,
@@ -159,11 +183,13 @@ impl std::fmt::Display for ClientError {
 impl std::error::Error for ClientError {}
 
 /// What a successful handshake found out.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Accepted {
     pub version: u8,
     /// Time from sending the hello to the last probe byte coming back.
     pub elapsed: Duration,
+    /// Options of the server's reply.
+    pub options: Options,
 }
 
 /// Client side: sends the hello and the probe, reads the reply and the
@@ -174,10 +200,20 @@ pub async fn client<S: AsyncRead + AsyncWrite + Unpin>(
     probe: u16,
     stall: Duration,
 ) -> Result<Accepted, ClientError> {
+    client_with(stream, probe, stall, &Vec::new()).await
+}
+
+/// [`client`] with options in the hello.
+pub async fn client_with<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    probe: u16,
+    stall: Duration,
+    options: &Options,
+) -> Result<Accepted, ClientError> {
     let started = std::time::Instant::now();
     let probe = probe.min(MAX_PROBE);
     let content = probe_bytes(probe as usize);
-    let mut hello = header(VERSION, 0, probe, &[]);
+    let mut hello = header(VERSION, 0, probe, &encode_options(options));
     hello.extend_from_slice(&content);
     let (mut r, mut w) = tokio::io::split(stream);
 
@@ -211,6 +247,9 @@ pub async fn client<S: AsyncRead + AsyncWrite + Unpin>(
                 .find(|(t, _)| *t == OPT_REASON)
                 .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
                 .unwrap_or_else(|| "no reason given".into());
+            if option(&reply.options, OPT_RESUME_FAILED).is_some() {
+                return Err(ClientError::CannotResume(reason));
+            }
             return Err(ClientError::Refused(reason));
         }
         if reply.code != ACCEPTED || reply.probe != probe {
@@ -241,14 +280,15 @@ pub async fn client<S: AsyncRead + AsyncWrite + Unpin>(
             }
             got += n;
         }
-        Ok(reply.version)
+        Ok((reply.version, reply.options))
     };
     let (sent, received) = tokio::join!(send, receive);
-    let version = received?;
+    let (version, options) = received?;
     sent.map_err(ClientError::Io)?;
     Ok(Accepted {
         version,
         elapsed: started.elapsed(),
+        options,
     })
 }
 
@@ -267,7 +307,19 @@ pub async fn refuse<W: AsyncWrite + Unpin>(
     hello: &Header,
     reason: &str,
 ) -> io::Result<()> {
-    let opts = encode_options(&vec![(OPT_REASON, reason.as_bytes().to_vec())]);
+    refuse_with(w, hello, reason, Vec::new()).await
+}
+
+/// [`refuse`] with more options after the reason.
+pub async fn refuse_with<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    hello: &Header,
+    reason: &str,
+    more: Options,
+) -> io::Result<()> {
+    let mut all = vec![(OPT_REASON, reason.as_bytes().to_vec())];
+    all.extend(more);
+    let opts = encode_options(&all);
     w.write_all(&header(hello.version.min(VERSION), REFUSED, 0, &opts))
         .await?;
     w.flush().await
@@ -279,11 +331,20 @@ pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
     s: &mut S,
     hello: &Header,
 ) -> io::Result<()> {
+    accept_with(s, hello, &Vec::new()).await
+}
+
+/// [`accept`] with options in the reply.
+pub async fn accept_with<S: AsyncRead + AsyncWrite + Unpin>(
+    s: &mut S,
+    hello: &Header,
+    options: &Options,
+) -> io::Result<()> {
     s.write_all(&header(
         hello.version.min(VERSION),
         ACCEPTED,
         hello.probe,
-        &[],
+        &encode_options(options),
     ))
     .await?;
     s.flush().await?;

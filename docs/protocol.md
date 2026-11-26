@@ -46,6 +46,8 @@ A server:
   ([Lifetime](#lifetime)).
 * MUST refuse a channel it cannot serve with a refusal reply, not by
   closing it silently.
+* MAY offer [resumable sessions](#resumable-sessions); one that does
+  lists `resume` in INFO and follows that section.
 
 A client:
 
@@ -64,6 +66,8 @@ A client:
   addresses are not authenticated.
 * MUST show refusal reasons and CLOSE messages to the user and MUST NOT
   act on their text.
+* MAY ask for [resumable sessions](#resumable-sessions) when INFO has
+  `resume`.
 
 Both sides MUST ignore unknown flags, options, keys and trailing bytes
 where this document says so; that is how the protocol grows
@@ -128,6 +132,7 @@ INFO keys; clients ignore unknown keys:
 | `chan` | version of the channel handshake the server speaks (`1`); present with `psm`. Clients that do not know the version use the GATT stream |
 | `busy` | `1` while another device holds the GATT stream; absent otherwise. Concerns the GATT stream only |
 | `gatt` | `0` when the server does not serve the GATT stream (a macOS server); absent otherwise |
+| `resume` | seconds the server keeps a resumable session without a channel ([Resumable sessions](#resumable-sessions)); present only with `psm`, absent when the server does not resume sessions |
 
 The value can be longer than one ATT PDU; the server serves long reads
 (Read Blob) from the requested offset.
@@ -173,8 +178,9 @@ option = type:u8 len:u8 value
   limit is reached, or `session unavailable` when it cannot start the SSH
   server; clients show them and never parse them.
 - `options`: at most 1024 bytes. Defined: type 1, the reason (UTF-8),
-  in replies. Receivers ignore types they do not know, so later versions
-  can add options without breaking older peers.
+  in replies; types 2 to 5 for [resumable sessions](#resumable-sessions).
+  Receivers ignore types they do not know, so later versions can add
+  options without breaking older peers.
 - `probe`: `probe_len` bytes (at most 8192) of any content; clients send
   2048, about the size of an SSH key exchange init, the first large message
   of a session. The server sends its reply as soon as it has read the
@@ -224,6 +230,110 @@ Platform notes: Linux clients open the channel through the kernel (`AF_BLUETOOTH
 uses `BluetoothDevice.createInsecureL2capChannel` (API 29); iOS and macOS
 `CBPeripheral.openL2CAPChannel`. Web Bluetooth and Windows have no L2CAP
 API and use the GATT stream.
+
+## Resumable sessions
+
+A resumable session outlives the channel it started on: when the channel
+or the link goes away, the server keeps the session, and its sshd, for the
+seconds INFO `resume` says; the client opens a new channel and resumes it.
+Each side resends what the other had not received, so SSH does not notice
+the gap. Only L2CAP channels carry resumable sessions; both sides opt in,
+and a peer that does neither sees a channel exactly as above.
+
+### Handshake options
+
+| Type | Name | In | Value |
+|---|---|---|---|
+| 2 | RESUMABLE | hello | the client's replay buffer size, u32 |
+| 3 | RESUME | hello | token (16 bytes), stream bytes received from the server, u64 |
+| 4 | SESSION | accepted reply | token (16 bytes), the server's replay buffer size, u32, stream bytes received from the client, u64 |
+| 5 | RESUME FAILED | refused reply | empty |
+
+Receivers ignore bytes after the fields above, and raise a replay buffer
+size below 1024 to 1024.
+
+- **A fresh resumable session**: the client sends RESUMABLE without
+  RESUME. A server that resumes sessions answers with SESSION (received
+  0) and the channel carries records from then on. A reply without
+  SESSION means the session is not resumable, and the channel carries raw
+  SSH as above; a server that does not know the option answers that way.
+- **A resume**: the client sends RESUMABLE and RESUME, on any of the
+  server's channels, over the same link or a new one. The server answers
+  with SESSION, whose `received` says where the client resends from, or
+  refuses with a reason and RESUME FAILED when it does not know the token
+  (unknown, or the session ended) or no longer holds the client's offset.
+  The token in SESSION is new: tokens change on every resume. After RESUME
+  FAILED the session is gone and the client starts a fresh one.
+- A client that sent RESUME and gets an accepted reply without SESSION
+  closes the channel: the session cannot continue on raw SSH.
+- A server MUST generate tokens with a cryptographically secure random
+  generator. A token is bound to the session, not to the client's
+  address, which phones change.
+
+### Records
+
+After a handshake that ended with SESSION, every byte on the channel in
+either direction belongs to a record:
+
+```
+record = type:u8 len:u16 value
+```
+
+| Type | Name | Value |
+|---|---|---|
+| 1 | DATA | SSH stream bytes |
+| 2 | ACK | u64: stream bytes received from the peer since the start of the session |
+| 3 | CLOSE | reason u8 (the [CLOSE reasons](#frames) of BleStream), then an optional UTF-8 message |
+
+Receivers skip records of types they do not know. Records may span
+L2CAP SDUs; the channel is a byte stream.
+
+Stream offsets count the SSH bytes of one direction from the start of the
+session, across channels. Each side keeps the bytes it sent until the
+peer acknowledges them, and never holds more than its replay buffer size:
+when that is full it stops reading its SSH side. A receiver sends ACK at
+the latest when a quarter of the peer's replay buffer size has arrived
+since its last ACK, or 500 ms after unacknowledged bytes arrived. An ACK
+for bytes not sent is a protocol error: the receiver sends CLOSE 2 and
+closes the channel.
+
+### Ending and resuming
+
+- CLOSE ends the session at once, from either side; the server does not
+  keep it. A server sends CLOSE 0 when sshd has ended and the client has
+  acknowledged everything.
+- A channel that ends without CLOSE detaches the session: the server
+  keeps it for `resume` seconds, still delivering the client's bytes to
+  sshd and reading sshd's output until its replay buffer is full, then
+  ends it as an L2CAP session ends ([Lifetime](#lifetime)).
+- A resume for a session whose channel is still open moves the session
+  to the new channel and closes the old one: the client often notices a
+  lost link before the server does.
+- A detached session counts against the server's session limit.
+- sshd's own keepalive (`ClientAliveInterval` × `ClientAliveCountMax`)
+  ends a session that is detached for longer; a server that offers
+  resumption keeps it longer than `resume` or off.
+
+Security: blessh links are not encrypted, so the token is visible to
+anyone who records the link. A stolen token gives no access to the SSH
+session, which is encrypted and authenticated end to end; whoever resumes
+with it can only end the session, which anyone in range can do already.
+
+Test vectors (token `00 01 … 0f`, replay buffers of 0x10000, a 4-byte
+probe `abcd`):
+
+```
+hello, RESUMABLE              : 42 4c 53 48 01 00 04 00 06 00 02 04 00 00 01 00 61 62 63 64
+reply, accepted, SESSION      : 42 4c 53 48 01 00 04 00 1e 00 04 1c
+                                00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+                                00 00 01 00 00 00 00 00 00 00 00 00   (then the echo)
+RESUME, received 0x0102       : 03 18 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+                                02 01 00 00 00 00 00 00   (an option in a hello)
+reply, refused, cannot resume : 42 4c 53 48 01 01 00 00 0b 00 01 07 65 78 70 69 72 65 64 05 00
+DATA "ab"                     : 01 02 00 61 62
+ACK 0x0102                    : 02 08 00 02 01 00 00 00 00 00 00
+CLOSE normal "ok"             : 03 03 00 00 6f 6b
+```
 
 ## GATT stream: BleStream v1
 
