@@ -20,6 +20,7 @@ use blessh_core::{
         self, printable, CloseReason, Frame, INFO_UUID, PSM_UUID, RX_UUID, SERVICE_UUID, TX_UUID,
     },
     relay::{self, End},
+    resume::{self, Attach, Registry},
     session::{self, Preamble},
 };
 use bluer::{
@@ -100,6 +101,12 @@ struct Args {
     /// it either way.
     #[arg(long)]
     discoverable: bool,
+    /// Seconds a resumable session is kept after its channel or link went
+    /// away, for the client to resume it on a new channel (0: sessions are
+    /// not resumable). sshd's ClientAliveInterval × ClientAliveCountMax
+    /// must be longer, or sshd ends the session during the gap.
+    #[arg(long, default_value_t = 120)]
+    resume: u64,
 }
 
 /// Sessions in progress over both transports, per client device.
@@ -506,6 +513,7 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
 
     let info_name = name.clone();
     let info_psms = psms.clone();
+    let info_resume = args.resume;
     // The device whose stream is open or being opened. INFO tells other
     // devices that the server is busy before they subscribe: BlueZ closes a
     // notification socket of another device when a subscribed device
@@ -539,7 +547,8 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
                             Some(h) if h != req.device_address => is_connected(&adapter, h).await,
                             _ => false,
                         };
-                        let v = protocol::info(&name, req.mtu, busy, &psms).into_bytes();
+                        let v =
+                            protocol::info(&name, req.mtu, busy, &psms, info_resume).into_bytes();
                         protocol::read_at(&v, req.offset)
                             .map(<[u8]>::to_vec)
                             .ok_or(ReqError::InvalidOffset)
@@ -629,16 +638,19 @@ async fn serve(args: Args, name: String) -> Result<(), Box<dyn std::error::Error
 
     // Tells the sessions that the daemon is stopping.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Resumable sessions over all channels, by token.
+    let registry = Registry::default();
     let accept_tasks: Vec<_> = listeners
         .into_iter()
         .map(|(l, _, _)| {
-            let (adapter, args, sessions, shutdown) = (
+            let (adapter, args, sessions, shutdown, registry) = (
                 adapter.clone(),
                 args.clone(),
                 sessions.clone(),
                 shutdown_rx.clone(),
+                registry.clone(),
             );
-            tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown))
+            tokio::spawn(accept_loop(l, adapter, args, sessions, shutdown, registry))
         })
         .collect();
     tokio::pin!(rx_control, tx_control, adapter_events);
@@ -1174,15 +1186,21 @@ async fn accept_loop(
     args: Args,
     sessions: Shared,
     shutdown: watch::Receiver<bool>,
+    registry: Registry,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let guard = ChannelGuard::new(&sessions, peer.addr, &adapter, &shutdown);
-                let (args, sessions, shutdown) = (args.clone(), sessions.clone(), shutdown.clone());
+                let (args, sessions, shutdown, registry) = (
+                    args.clone(),
+                    sessions.clone(),
+                    shutdown.clone(),
+                    registry.clone(),
+                );
                 tokio::spawn(async move {
-                    run_l2cap_session(stream, peer, args, sessions, shutdown).await;
-                    drop(guard);
+                    run_l2cap_session(stream, peer, guard, args, sessions, shutdown, registry)
+                        .await;
                 });
             }
             Err(e) => {
@@ -1201,14 +1219,18 @@ async fn refuse(mut stream: Stream, hello: &channel::Header, reason: &str) {
 }
 
 /// Runs one session over an L2CAP channel: raw SSH between the channel and
-/// the session socket. Logged like a GATT session, with the same id in the
-/// session unit's journal.
+/// the session socket, or records when the client asked for a resumable
+/// session. A hello that resumes a session hands the channel to that
+/// session. Logged like a GATT session, with the same id in the session
+/// unit's journal. `guard` counts the channel for as long as it is open.
 async fn run_l2cap_session(
     mut stream: Stream,
     peer: SocketAddr,
+    guard: ChannelGuard,
     args: Args,
     sessions: Shared,
     mut shutdown: watch::Receiver<bool>,
+    registry: Registry,
 ) {
     let addr = peer.addr;
     let hello = match tokio::time::timeout(
@@ -1227,6 +1249,25 @@ async fn run_l2cap_session(
             return;
         }
     };
+    if args.resume > 0 {
+        if let Some(req) = resume::parse_resume(&hello.options) {
+            let tag = resume::token_tag(&req.token);
+            let attach = Attach {
+                channel: Box::new(stream),
+                hello,
+                keep: Box::new(guard),
+                peer: addr.to_string(),
+            };
+            match registry.route(&req.token, attach) {
+                Ok(()) => info!("{addr}: channel resumes session {tag}…"),
+                Err(a) => {
+                    info!("{addr}: cannot resume session {tag}…: unknown or expired");
+                    resume::refuse_resume(a, "unknown or expired session").await;
+                }
+            }
+            return;
+        }
+    }
     let address_type = match peer.addr_type {
         AddressType::LePublic => "public",
         AddressType::LeRandom => "random",
@@ -1273,14 +1314,44 @@ async fn run_l2cap_session(
             return;
         }
     };
+    let stopping = async {
+        let _ = shutdown.wait_for(|s| *s).await;
+    };
+    if args.resume > 0 {
+        if let Some(_replay) = resume::parse_resumable(&hello.options) {
+            info!("{addr}: session {id}: resumable SSH session started");
+            let attach = Attach {
+                channel: Box::new(stream),
+                hello,
+                keep: Box::new(guard),
+                peer: addr.to_string(),
+            };
+            let config = resume::Config {
+                linger: Duration::from_secs(args.resume),
+                replay: resume::DEFAULT_REPLAY,
+            };
+            let log_id = id.clone();
+            let summary = resume::serve(local, attach, registry, config, stopping, |line| {
+                info!("{addr}: session {log_id}: {line}")
+            })
+            .await;
+            info!(
+                "{addr}: session {id}: ended after {}s, {} bytes from client, {} bytes to client, {} resumes: {}",
+                started.elapsed().as_secs(),
+                summary.from_client,
+                summary.to_client,
+                summary.resumes,
+                summary.end
+            );
+            drop(counted);
+            return;
+        }
+    }
     if let Err(e) = channel::accept(&mut stream, &hello).await {
         info!("{addr}: session {id}: channel handshake failed: {e}");
         return;
     }
     info!("{addr}: session {id}: SSH session started");
-    let stopping = async {
-        let _ = shutdown.wait_for(|s| *s).await;
-    };
     let result = relay::run(stream, local, bluez::is_link_end, stopping).await;
     let (end, from_client, to_client) = match &result {
         Ok(o) => (
@@ -1302,4 +1373,5 @@ async fn run_l2cap_session(
         started.elapsed().as_secs()
     );
     drop(counted);
+    drop(guard);
 }

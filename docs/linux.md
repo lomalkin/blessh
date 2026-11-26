@@ -57,6 +57,7 @@ systemctl restart blessh-server`:
 | `--name NAME` | advertised name; default: the static host name from `/etc/hostname`, which neither DHCP nor avahi's renames on mDNS conflicts change |
 | `--adapter hci1` | Bluetooth adapter; default: BlueZ's default adapter |
 | `--max-sessions N` | sessions at a time over all transports (default 4; `MaxConnections` in `blessh-session.socket` must allow as many) |
+| `--resume SECONDS` | how long a resumable session is kept after its channel or link went away, for the client to resume it on a new channel (default 120; 0: sessions are not resumable). A detached session counts against `--max-sessions`. sshd's `ClientAliveInterval` × `ClientAliveCountMax` must be longer, or 0 |
 | `--no-l2cap` | serve the GATT stream only |
 | `--discoverable` | also show the server in the Bluetooth device lists of phones and computers (see below) |
 
