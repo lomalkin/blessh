@@ -176,3 +176,27 @@ configuration nor bluetoothd is touched; the journal of
   `/etc/bluetooth/main.conf` is left alone: `Channels = 1` already turns
   EATT off; a larger value means the administrator wants EATT, and phones
   will then be asked to pair.
+
+## iPhone and iPad clients: bluetoothd's GATT client
+
+When a device connects, bluetoothd also acts as a GATT client towards
+it and reads its standard services. An iPhone or iPad protects its
+Battery Level characteristic, so the read fails with Insufficient
+Authentication; bluetoothd then asks for pairing, the device sends a
+pairing request, the adapter refuses it (it is not pairable) and
+bluetoothd drops the link about two seconds later, usually in the middle
+of the channel handshake. The server journal shows handshakes failing
+with `Software caused connection abort` or channels dropped before a
+hello; Android clients are not affected.
+
+blessh does not use bluetoothd's client role. Turn it off in the `[GATT]`
+section of `/etc/bluetooth/main.conf` and restart bluetooth (which
+restarts the server):
+
+```
+[GATT]
+Client = false
+```
+
+Seen with BlueZ 5.85 on Ubuntu 26.04 and an iPhone on iOS 26; the
+package does not change this setting.
