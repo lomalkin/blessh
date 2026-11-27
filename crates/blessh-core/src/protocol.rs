@@ -285,14 +285,24 @@ mod printable_tests {
 /// read arrived on, for clients that cannot query it; `busy` says that
 /// another device holds the GATT stream; `psms` are the server's L2CAP
 /// channels in the order clients try them, with the channel handshake
-/// version.
-pub fn info(name: &str, mtu: u16, busy: bool, psms: &[u16]) -> String {
+/// version; `resume` the seconds a resumable session is kept without a
+/// channel (0: the server does not resume sessions; only with channels).
+pub fn info(name: &str, mtu: u16, busy: bool, psms: &[u16], resume: u64) -> String {
     let busy = if busy { ";busy=1" } else { "" };
     let chan = if psms.is_empty() {
         String::new()
     } else {
         let list: Vec<String> = psms.iter().map(u16::to_string).collect();
-        format!(";psm={};chan={}", list.join(","), crate::channel::VERSION)
+        let resume = if resume > 0 {
+            format!(";resume={resume}")
+        } else {
+            String::new()
+        };
+        format!(
+            ";psm={};chan={}{resume}",
+            list.join(","),
+            crate::channel::VERSION
+        )
     };
     format!("proto={VERSION};name={name};mtu={mtu}{busy}{chan}")
 }
@@ -347,12 +357,21 @@ mod info_tests {
 
     #[test]
     fn info_value() {
-        assert_eq!(info("pi", 517, false, &[]), "proto=1;name=pi;mtu=517");
-        assert_eq!(info("pi", 23, true, &[]), "proto=1;name=pi;mtu=23;busy=1");
+        assert_eq!(info("pi", 517, false, &[], 0), "proto=1;name=pi;mtu=517");
         assert_eq!(
-            info("pi", 23, false, &[0x81, 0x83]),
+            info("pi", 23, true, &[], 0),
+            "proto=1;name=pi;mtu=23;busy=1"
+        );
+        assert_eq!(
+            info("pi", 23, false, &[0x81, 0x83], 0),
             "proto=1;name=pi;mtu=23;psm=129,131;chan=1"
         );
+        assert_eq!(
+            info("pi", 23, false, &[0x81], 120),
+            "proto=1;name=pi;mtu=23;psm=129;chan=1;resume=120"
+        );
+        // No channels, no resumption: it exists on channels only.
+        assert_eq!(info("pi", 23, false, &[], 120), "proto=1;name=pi;mtu=23");
     }
 
     #[test]
@@ -382,7 +401,7 @@ mod info_tests {
 
     #[test]
     fn long_reads_continue_at_offset() {
-        let v = info("a-rather-long-host-name", 23, false, &[]).into_bytes();
+        let v = info("a-rather-long-host-name", 23, false, &[], 0).into_bytes();
         let mut got = Vec::new();
         while let Some(part) = read_at(&v, got.len() as u16).filter(|p| !p.is_empty()) {
             got.extend_from_slice(&part[..part.len().min(22)]);

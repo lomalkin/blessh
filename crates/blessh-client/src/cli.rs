@@ -105,6 +105,11 @@ pub struct ProxyArgs {
     /// the next one is tried.
     #[arg(long, default_value_t = 3)]
     pub stall_timeout: u64,
+    /// Seconds to keep trying to resume the session on a new channel when
+    /// the channel or the link is lost, if the server keeps sessions
+    /// (L2CAP only); 0 asks for an ordinary session.
+    #[arg(long, default_value_t = 120)]
+    pub resume: u64,
     /// GATT stream: receive window granted to the server, in bytes.
     #[arg(long, default_value_t = 32768)]
     pub window: u32,
@@ -208,6 +213,57 @@ fn sets_option(args: &[String], name: &str) -> bool {
 }
 
 /// Resolves when ssh ends its ProxyCommand (SIGHUP or SIGTERM).
+/// Options of the first channel's hello: a resumable session, unless
+/// `--resume 0`.
+pub fn first_options(args: &ProxyArgs) -> blessh_core::channel::Options {
+    use blessh_core::resume;
+    if args.resume == 0 {
+        Vec::new()
+    } else {
+        resume::client_options(resume::DEFAULT_REPLAY, None)
+    }
+}
+
+/// Settings of a resumable session from the proxy's arguments.
+pub fn resume_config(args: &ProxyArgs) -> blessh_core::resume::ClientConfig {
+    blessh_core::resume::ClientConfig {
+        replay: blessh_core::resume::DEFAULT_REPLAY,
+        give_up: std::time::Duration::from_secs(args.resume),
+    }
+}
+
+/// Exit code of a resumable session: 0 when it ended normally, 2 when the
+/// server ended it otherwise, 3 when the link was lost for good.
+pub fn resumed_exit_code(summary: &blessh_core::resume::ClientSummary) -> i32 {
+    use blessh_core::{protocol::printable, resume::ClientEnd};
+    log::debug!(
+        "session ended: {:?}, {} bytes from the server, {} bytes to it, {} resumes",
+        summary.end,
+        summary.from_server,
+        summary.to_server,
+        summary.resumes
+    );
+    match &summary.end {
+        ClientEnd::Local | ClientEnd::Cancelled => 0,
+        ClientEnd::Closed { reason: 0, .. } => 0,
+        ClientEnd::Closed { reason, message } => {
+            log::warn!(
+                "server closed the session: reason {reason} {}",
+                printable(message)
+            );
+            2
+        }
+        ClientEnd::Protocol(e) => {
+            log::warn!("protocol error: {e}");
+            2
+        }
+        ClientEnd::Lost(why) => {
+            log::warn!("link lost: {why}");
+            3
+        }
+    }
+}
+
 pub fn stop_signal() -> std::io::Result<impl Future<Output = ()>> {
     let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

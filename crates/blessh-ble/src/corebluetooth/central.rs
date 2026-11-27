@@ -568,6 +568,12 @@ impl Central {
         }
     }
 
+    /// Whether the link to the peripheral is up now.
+    pub fn is_connected(&self, peripheral: &Shared<CBPeripheral>) -> bool {
+        // SAFETY: no preconditions.
+        (unsafe { peripheral.state() }) == CBPeripheralState::Connected
+    }
+
     pub fn disconnect(&self, peripheral: &Shared<CBPeripheral>) {
         // SAFETY: no preconditions.
         unsafe { self.manager.cancelPeripheralConnection(peripheral) };

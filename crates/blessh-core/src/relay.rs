@@ -11,6 +11,22 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// Bytes read from one side and not yet written to the other.
 const BUFFER: usize = 16384;
 
+/// Most bytes handed to the BLE channel in one write. On an L2CAP channel
+/// each write is one SDU, and the peer's receive MTU allows up to 65535
+/// (Android's). Linux splits an SDU into PDUs of the peer's MPS and
+/// allocates them all at once against the socket's send buffer: a large
+/// SDU over a small MPS can never fit, so a non-blocking send fails with
+/// EAGAIN for ever while poll still reports the socket writable, and the
+/// relay spins without sending anything (seen on a Raspberry Pi 3 B, 27-byte
+/// LE buffers, after a 16 KB burst of output). Small SDUs always fit.
+pub(crate) const MAX_PEER_WRITE: usize = 1024;
+
+/// The front of `buf`, at most `max` bytes, as one contiguous slice.
+fn head(buf: &VecDeque<u8>, max: usize) -> &[u8] {
+    let s = buf.as_slices().0;
+    &s[..s.len().min(max)]
+}
+
 #[derive(Debug)]
 pub enum End {
     /// The BLE channel ended: closed by the peer or the link was lost. The
@@ -75,7 +91,7 @@ where
                 return Ok(outcome(End::Cancelled, from_peer, sent));
             }
             // Single writes keep the branches cancel safe.
-            r = pw.write(to_peer.as_slices().0), if !to_peer.is_empty() => {
+            r = pw.write(head(&to_peer, MAX_PEER_WRITE)), if !to_peer.is_empty() => {
                 match r {
                     Ok(n) if n > 0 => {
                         to_peer.drain(..n);
@@ -152,6 +168,72 @@ mod tests {
         assert!(matches!(out.end, End::Local));
         assert_eq!(out.from_peer, sent.len() as u64);
         assert_eq!(out.to_peer, sent.len() as u64);
+    }
+
+    /// Records the size of every write and passes the bytes on.
+    struct SizeLog<W> {
+        inner: W,
+        sizes: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    impl<W: AsyncWrite + Unpin> AsyncWrite for SizeLog<W> {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            self.sizes.lock().unwrap().push(buf.len());
+            std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    impl<W: AsyncRead + Unpin> AsyncRead for SizeLog<W> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    #[tokio::test]
+    async fn writes_to_the_peer_are_capped_however_much_is_buffered() {
+        // A slow peer lets the local side fill the whole buffer, as sshd
+        // does with a burst of output.
+        let (peer_a, peer_b) = tokio::io::duplex(1 << 20);
+        let (local_a, local_b) = tokio::io::duplex(1 << 20);
+        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let peer = SizeLog {
+            inner: peer_a,
+            sizes: sizes.clone(),
+        };
+        let sent: Vec<u8> = (0..100_000u32).map(|i| (i * 7) as u8).collect();
+        let (_lr, mut lw) = tokio::io::split(local_b);
+        lw.write_all(&sent).await.unwrap();
+        lw.shutdown().await.unwrap();
+        let out = run(peer, local_a, fault, std::future::pending())
+            .await
+            .unwrap();
+        assert!(matches!(out.end, End::Local));
+        let (mut pr, _pw) = tokio::io::split(peer_b);
+        let mut got = vec![0u8; sent.len()];
+        pr.read_exact(&mut got).await.unwrap();
+        assert_eq!(got, sent);
+        let sizes = sizes.lock().unwrap();
+        assert!(sizes.iter().all(|&n| n <= MAX_PEER_WRITE), "{sizes:?}");
     }
 
     #[tokio::test]

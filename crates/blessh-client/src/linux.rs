@@ -22,6 +22,7 @@ use blessh_core::{
     name,
     protocol::{self, printable, CloseReason, INFO_UUID, RX_UUID, SERVICE_UUID, TX_UUID},
     relay::{self, End},
+    resume,
 };
 use bluer::{
     gatt::{
@@ -34,7 +35,7 @@ use futures::StreamExt;
 use log::{debug, info, warn};
 
 use crate::{
-    cli::{stop_signal, ProxyArgs, ScanArgs},
+    cli::{first_options, resume_config, resumed_exit_code, stop_signal, ProxyArgs, ScanArgs},
     listing::{Printer, Row},
 };
 
@@ -715,7 +716,9 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
     if !psms.is_empty() {
         lock.set_psms(&psms);
         let peer_type = dev.address_type().await?;
-        if let Some(stream) = open_channel(local, addr, peer_type, &psms, args).await? {
+        if let Some((stream, reply)) =
+            open_channel(local, addr, peer_type, &psms, args, &first_options(args)).await?
+        {
             {
                 let mtu = stream.as_ref().send_mtu().unwrap_or(0);
                 eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
@@ -728,7 +731,7 @@ async fn session(local: Address, found: Found, args: &ProxyArgs, lock: &DeviceLo
                         debug!("ATT channel ended: {e}");
                     })
                 });
-                let code = relay_channel(stream).await;
+                let code = serve_channel(local, addr, peer_type, &psms, args, stream, &reply).await;
                 if args.keep_link {
                     tokio::time::sleep(KEEP_LINK).await;
                 }
@@ -832,10 +835,12 @@ async fn bluetoothd_session(
     let psms = info.as_deref().map(protocol::info_psms).unwrap_or_default();
     if !psms.is_empty() && !args.gatt {
         let peer_type = dev.address_type().await?;
-        if let Some(stream) = open_channel(local, addr, peer_type, &psms, args).await? {
+        if let Some((stream, reply)) =
+            open_channel(local, addr, peer_type, &psms, args, &first_options(args)).await?
+        {
             let mtu = stream.as_ref().send_mtu().unwrap_or(0);
             eprintln!("blessh: {name} {addr}: l2cap, mtu {mtu}");
-            return relay_channel(stream).await;
+            return serve_channel(local, addr, peer_type, &psms, args, stream, &reply).await;
         }
         if info.as_deref().is_some_and(|i| !protocol::info_gatt(i)) {
             return Err(
@@ -901,7 +906,8 @@ async fn open_channel(
     peer_type: bluer::AddressType,
     psms: &[u16],
     args: &ProxyArgs,
-) -> Result<Option<bluer::l2cap::Stream>> {
+    options: &channel::Options,
+) -> Result<Option<(bluer::l2cap::Stream, channel::Options)>> {
     let mut attempts: Vec<(u16, u16)> = psms.iter().map(|p| (*p, args.l2cap_mtu)).collect();
     if args.l2cap_mtu > SMALL_MTU {
         attempts.extend(psms.iter().map(|p| (*p, SMALL_MTU)));
@@ -925,10 +931,11 @@ async fn open_channel(
                     continue;
                 }
             };
-        match channel::client(
+        match channel::client_with(
             &mut stream,
             args.probe,
             Duration::from_secs(args.stall_timeout),
+            options,
         )
         .await
         {
@@ -939,13 +946,63 @@ async fn open_channel(
                     ok.elapsed.as_millis()
                 );
                 crate::cache::put(&addr.to_string(), psm, mtu);
-                return Ok(Some(stream));
+                return Ok(Some((stream, ok.options)));
             }
             Err(channel::ClientError::Refused(r)) => return Err(r.into()),
+            Err(e @ channel::ClientError::CannotResume(_)) => return Err(Box::new(e)),
             Err(e) => warn!("L2CAP channel on PSM {psm} (MTU {mtu}): {e}; {next}"),
         }
     }
     Ok(None)
+}
+
+/// Runs the session on an open channel: resumable if the server granted
+/// it, else relayed as is. Returns the exit code.
+async fn serve_channel(
+    local: Address,
+    addr: Address,
+    peer_type: bluer::AddressType,
+    psms: &[u16],
+    args: &ProxyArgs,
+    stream: bluer::l2cap::Stream,
+    reply: &channel::Options,
+) -> Result<i32> {
+    let Some(grant) = resume::parse_session(reply).filter(|_| args.resume > 0) else {
+        return relay_channel(stream).await;
+    };
+    debug!(
+        "resumable session {}…, server replay buffer {}",
+        resume::token_tag(&grant.token),
+        grant.replay
+    );
+    let mut stdio = bridge::stdio()?;
+    let reconnect = |req: resume::ResumeRequest| async move {
+        let opts = resume::client_options(resume::DEFAULT_REPLAY, Some(&req));
+        match open_channel(local, addr, peer_type, psms, args, &opts).await {
+            Ok(Some((s, reply))) => match resume::parse_session(&reply) {
+                Some(g) => resume::Reconnect::Attached(s, g),
+                None => resume::Reconnect::CannotResume("no session in the reply".into()),
+            },
+            Ok(None) => resume::Reconnect::Failed("no channel works yet".into()),
+            Err(e) => match e.downcast_ref::<channel::ClientError>() {
+                Some(channel::ClientError::CannotResume(r)) => {
+                    resume::Reconnect::CannotResume(r.clone())
+                }
+                _ => resume::Reconnect::Failed(e.to_string()),
+            },
+        }
+    };
+    let summary = resume::run_client(
+        &mut stdio,
+        stream,
+        grant,
+        resume_config(args),
+        reconnect,
+        stop_signal()?,
+        |line| info!("{line}"),
+    )
+    .await;
+    Ok(resumed_exit_code(&summary))
 }
 
 /// Relays stdin/stdout over the L2CAP channel; returns the exit code.

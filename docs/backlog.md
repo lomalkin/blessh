@@ -188,7 +188,6 @@ rework (2026-10).
 * `blessh scan` on Linux lists only devices whose advertised service
   UUID bluetoothd currently knows; it forgets them when a link drops,
   until it hears the device again.
-* Session resumption over a new link (would need a layer above raw SSH).
 * GATT stream with several sessions on BlueZ ≥ 5.69 (per-device
   sockets), if a GATT-only client ever needs it.
 * The vhci test with `DAEMON_USER` (D-Bus policy) in CI, which needs

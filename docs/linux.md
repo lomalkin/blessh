@@ -57,6 +57,7 @@ systemctl restart blessh-server`:
 | `--name NAME` | advertised name; default: the static host name from `/etc/hostname`, which neither DHCP nor avahi's renames on mDNS conflicts change |
 | `--adapter hci1` | Bluetooth adapter; default: BlueZ's default adapter |
 | `--max-sessions N` | sessions at a time over all transports (default 4; `MaxConnections` in `blessh-session.socket` must allow as many) |
+| `--resume SECONDS` | how long a resumable session is kept after its channel or link went away, for the client to resume it on a new channel (default 120; 0: sessions are not resumable). A detached session counts against `--max-sessions`. sshd's `ClientAliveInterval` × `ClientAliveCountMax` must be longer, or 0 |
 | `--no-l2cap` | serve the GATT stream only |
 | `--discoverable` | also show the server in the Bluetooth device lists of phones and computers (see below) |
 
@@ -176,3 +177,27 @@ configuration nor bluetoothd is touched; the journal of
   `/etc/bluetooth/main.conf` is left alone: `Channels = 1` already turns
   EATT off; a larger value means the administrator wants EATT, and phones
   will then be asked to pair.
+
+## iPhone and iPad clients: bluetoothd's GATT client
+
+When a device connects, bluetoothd also acts as a GATT client towards
+it and reads its standard services. An iPhone or iPad protects its
+Battery Level characteristic, so the read fails with Insufficient
+Authentication; bluetoothd then asks for pairing, the device sends a
+pairing request, the adapter refuses it (it is not pairable) and
+bluetoothd drops the link about two seconds later, usually in the middle
+of the channel handshake. The server journal shows handshakes failing
+with `Software caused connection abort` or channels dropped before a
+hello; Android clients are not affected.
+
+blessh does not use bluetoothd's client role. Turn it off in the `[GATT]`
+section of `/etc/bluetooth/main.conf` and restart bluetooth (which
+restarts the server):
+
+```
+[GATT]
+Client = false
+```
+
+Seen with BlueZ 5.85 on Ubuntu 26.04 and an iPhone on iOS 26; the
+package does not change this setting.

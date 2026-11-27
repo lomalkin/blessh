@@ -116,7 +116,7 @@ define_class!(
                 // No GATT stream on macOS yet.
                 format!(
                     "{};gatt=0",
-                    protocol::info(&self.ivars().name, mtu, false, &psms)
+                    protocol::info(&self.ivars().name, mtu, false, &psms, 0)
                 )
                 .into_bytes()
             } else if uuid == PSM_UUID.to_string() {

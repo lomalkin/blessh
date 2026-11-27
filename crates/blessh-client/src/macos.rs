@@ -22,11 +22,13 @@ use blessh_core::{
     bridge, channel, name,
     protocol::{self, printable, INFO_UUID},
     relay::{self, End},
+    resume,
 };
 use log::{info, warn};
+use tokio::sync::oneshot;
 
 use crate::{
-    cli::{stop_signal, ProxyArgs, ScanArgs},
+    cli::{first_options, resume_config, resumed_exit_code, stop_signal, ProxyArgs, ScanArgs},
     listing::{Printer, Row},
 };
 
@@ -284,15 +286,17 @@ fn scan_for(central: &Central, target: Option<&str>, scan_timeout: Duration) -> 
         })
 }
 
-/// Opens the first of the server's channels that passes the handshake.
-/// CoreBluetooth calls block, so they run off the async runtime; the
-/// central travels with them.
+/// Opens the first of the server's channels that passes the handshake,
+/// with `options` in the hello. CoreBluetooth calls block, so they run off
+/// the async runtime; the central travels with them and comes back in
+/// every case.
 async fn open_channel(
     mut central: Central,
     found: &Found,
     psms: &[u16],
     args: &ProxyArgs,
-) -> Result<(Central, L2capStream, u16)> {
+    options: &channel::Options,
+) -> (Central, Result<(L2capStream, u16, channel::Options)>) {
     let attempts = crate::cache::order(&found.id, psms.iter().map(|p| (*p, 0)).collect());
     let _opening = crate::cache::OpenLock::take(&found.id).await;
     for (i, &(psm, _)) in attempts.iter().enumerate() {
@@ -302,11 +306,15 @@ async fn open_channel(
             "no channel left"
         };
         let peripheral = found.peripheral.clone();
-        let (c, opened) = tokio::task::spawn_blocking(move || {
+        let (c, opened) = match tokio::task::spawn_blocking(move || {
             let r = central.open_channel(&peripheral, psm, STEP_TIMEOUT);
             (central, r)
         })
-        .await?;
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => panic!("CoreBluetooth call panicked: {e}"),
+        };
         central = c;
         let mut stream = match opened {
             Ok(s) => s,
@@ -315,10 +323,11 @@ async fn open_channel(
                 continue;
             }
         };
-        match channel::client(
+        match channel::client_with(
             &mut stream,
             args.probe,
             Duration::from_secs(args.stall_timeout),
+            options,
         )
         .await
         {
@@ -329,15 +338,19 @@ async fn open_channel(
                     ok.elapsed.as_millis()
                 );
                 crate::cache::put(&found.id, psm, 0);
-                return Ok((central, stream, psm));
+                return (central, Ok((stream, psm, ok.options)));
             }
-            Err(channel::ClientError::Refused(r)) => return Err(r.into()),
+            Err(channel::ClientError::Refused(r)) => return (central, Err(r.into())),
+            Err(e @ channel::ClientError::CannotResume(_)) => return (central, Err(Box::new(e))),
             Err(e) => warn!("L2CAP channel on PSM {psm}: {e}; {next}"),
         }
     }
-    Err(
-        "no L2CAP channel of the server works, and the GATT stream is not available on macOS yet"
-            .into(),
+    (
+        central,
+        Err(
+            "no L2CAP channel of the server works, and the GATT stream is not available on macOS yet"
+                .into(),
+        ),
     )
 }
 
@@ -349,12 +362,27 @@ async fn proxy_async(args: ProxyArgs) -> Result<i32> {
     let scan_timeout = Duration::from_secs(args.scan_timeout);
     let (central, found, psms) =
         tokio::task::spawn_blocking(move || open(target, device, scan_timeout)).await??;
-    let (central, stream, psm) = open_channel(central, &found, &psms, &args).await?;
+    let (central, opened) =
+        open_channel(central, &found, &psms, &args, &first_options(&args)).await;
+    let (stream, psm, reply) = opened?;
     eprintln!(
         "blessh: {} {}: l2cap, psm {psm}",
         found.name().unwrap_or_default(),
         found.id
     );
+    match resume::parse_session(&reply).filter(|_| args.resume > 0) {
+        Some(grant) => resumable_session(central, found, psms, stream, grant, &args).await,
+        None => plain_session(central, found, stream, &args).await,
+    }
+}
+
+/// Relays stdin/stdout over a channel without a resumable session.
+async fn plain_session(
+    central: Central,
+    found: Found,
+    stream: L2capStream,
+    args: &ProxyArgs,
+) -> Result<i32> {
     let stdio = bridge::stdio()?;
     // The link going down ends the session even when the channel's streams
     // do not report it.
@@ -396,4 +424,144 @@ async fn proxy_async(args: ProxyArgs) -> Result<i32> {
             3
         }
     })
+}
+
+/// A thread that holds the central while it waits for the link to go
+/// down, and fires `lost` when it does.
+struct LinkWatch {
+    stop: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<Central>,
+}
+
+impl LinkWatch {
+    fn start(central: Central, found: &Found) -> (Self, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let watch_stop = stop.clone();
+        let watched = found.peripheral.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            if let Some(why) = central.wait_disconnected(&watched, &watch_stop) {
+                log::debug!("link lost: {why}");
+                let _ = tx.send(());
+            }
+            central
+        });
+        (Self { stop, task }, rx)
+    }
+
+    /// Stops watching and gives the central back.
+    async fn central(self) -> Central {
+        self.stop.store(true, Ordering::SeqCst);
+        match self.task.await {
+            Ok(c) => c,
+            Err(e) => panic!("link watcher panicked: {e}"),
+        }
+    }
+}
+
+/// Where the central is between channels.
+enum Held {
+    Idle(Central),
+    Watching(LinkWatch),
+}
+
+impl Held {
+    async fn central(self) -> Central {
+        match self {
+            Held::Idle(c) => c,
+            Held::Watching(w) => w.central().await,
+        }
+    }
+}
+
+/// Runs a resumable session: when the channel or the link is lost, ssh's
+/// stdio stays open while the client connects again and resumes the
+/// session on a new channel.
+async fn resumable_session(
+    central: Central,
+    found: Found,
+    psms: Vec<u16>,
+    stream: L2capStream,
+    grant: resume::Grant,
+    args: &ProxyArgs,
+) -> Result<i32> {
+    log::debug!(
+        "resumable session {}…, server replay buffer {}",
+        resume::token_tag(&grant.token),
+        grant.replay
+    );
+    let mut stdio = bridge::stdio()?;
+    let (watch, lost) = LinkWatch::start(central, &found);
+    let first = resume::Watched::new(stream, lost);
+    let held = Arc::new(tokio::sync::Mutex::new(Some(Held::Watching(watch))));
+    let (found, psms) = (&found, &psms);
+    let reconnect = |req: resume::ResumeRequest| {
+        let held = held.clone();
+        async move {
+            let mut slot = held.lock().await;
+            let Some(h) = slot.take() else {
+                return resume::Reconnect::CannotResume("no Bluetooth central".into());
+            };
+            let central = h.central().await;
+            let peripheral = found.peripheral.clone();
+            let (central, connected) = match tokio::task::spawn_blocking(move || {
+                let r = if central.is_connected(&peripheral) {
+                    Ok(())
+                } else {
+                    central.connect(&peripheral, STEP_TIMEOUT)
+                };
+                (central, r)
+            })
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => panic!("CoreBluetooth call panicked: {e}"),
+            };
+            if let Err(e) = connected {
+                *slot = Some(Held::Idle(central));
+                return resume::Reconnect::Failed(e.to_string());
+            }
+            let opts = resume::client_options(resume::DEFAULT_REPLAY, Some(&req));
+            let (central, opened) = open_channel(central, found, psms, args, &opts).await;
+            match opened {
+                Ok((stream, _psm, reply)) => match resume::parse_session(&reply) {
+                    Some(g) => {
+                        let (watch, lost) = LinkWatch::start(central, found);
+                        *slot = Some(Held::Watching(watch));
+                        resume::Reconnect::Attached(resume::Watched::new(stream, lost), g)
+                    }
+                    None => {
+                        *slot = Some(Held::Idle(central));
+                        resume::Reconnect::CannotResume("no session in the reply".into())
+                    }
+                },
+                Err(e) => {
+                    *slot = Some(Held::Idle(central));
+                    match e.downcast_ref::<channel::ClientError>() {
+                        Some(channel::ClientError::CannotResume(r)) => {
+                            resume::Reconnect::CannotResume(r.clone())
+                        }
+                        _ => resume::Reconnect::Failed(e.to_string()),
+                    }
+                }
+            }
+        }
+    };
+    let summary = resume::run_client(
+        &mut stdio,
+        first,
+        grant,
+        resume_config(args),
+        reconnect,
+        stop_signal()?,
+        |line| info!("{line}"),
+    )
+    .await;
+    if let Some(h) = held.lock().await.take() {
+        let central = h.central().await;
+        if !args.keep_link {
+            central.disconnect(&found.peripheral);
+        }
+    }
+    Ok(resumed_exit_code(&summary))
 }

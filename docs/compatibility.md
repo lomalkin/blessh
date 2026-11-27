@@ -31,13 +31,19 @@ and how the protocol grows.
 * **Payload:** a plain SSH connection to the server's sshd with the
   system host keys; the package never changes them.
 * **Behaviour:** the server ends a session when its channel or link goes
-  away; a GATT client that subscribes while another device holds the
+  away, except a resumable session, which it keeps for INFO `resume`
+  seconds; a GATT client that subscribes while another device holds the
   stream gets CLOSE 1.
 
 ## How the protocol grows
 
 * **INFO keys** may be added; `proto` and `name` stay. Added so far: `mtu`
-  (ble-term 0.1.3), `busy` (0.2.3), `psm` and `chan` (blessh 0.1).
+  (ble-term 0.1.3), `busy` (0.2.3), `psm` and `chan` (blessh 0.1),
+  `resume` (resumable sessions).
+* **Resumable sessions** are opt-in on both sides (the RESUMABLE option
+  answered with SESSION): the options, record types and CLOSE behaviour
+  of protocol.md stay; record types may be added, receivers skip unknown
+  ones.
 * **Channels** may be added to the `psm` list or reordered; clients try
   them in order and must accept any number.
 * **Characteristics** may be added; existing UUIDs and properties stay.
