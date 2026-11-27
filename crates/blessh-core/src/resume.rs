@@ -768,5 +768,278 @@ where
     }
 }
 
+// ---------------------------------------------------------------- client
+
+/// The options of a client's channel hello: RESUMABLE, and RESUME when the
+/// channel continues a session.
+pub fn client_options(replay: u32, resume: Option<&ResumeRequest>) -> Options {
+    let mut o = vec![resumable_option(replay)];
+    if let Some(r) = resume {
+        o.push(resume_option(r));
+    }
+    o
+}
+
+/// What a client's attempt to open a channel for a session brought.
+pub enum Reconnect<C> {
+    /// A channel whose handshake answered with SESSION.
+    Attached(C, Grant),
+    /// The server refused the resume: the session is gone.
+    CannotResume(String),
+    /// No channel this time (no link, a stalled channel); try again.
+    Failed(String),
+}
+
+/// How a client's resumable session ended.
+#[derive(Debug)]
+pub enum ClientEnd {
+    /// The local side (ssh) ended and everything it sent arrived.
+    Local,
+    /// The server ended the session with CLOSE.
+    Closed { reason: u8, message: String },
+    /// A record the protocol does not allow.
+    Protocol(io::Error),
+    /// `stop` completed: the client is exiting.
+    Cancelled,
+    /// The channel was lost and the session could not be resumed.
+    Lost(String),
+}
+
+/// How a client's resumable session went, for its log and exit code.
+#[derive(Debug)]
+pub struct ClientSummary {
+    pub end: ClientEnd,
+    pub from_server: u64,
+    pub to_server: u64,
+    /// Channels the session ran on after the first.
+    pub resumes: u32,
+}
+
+/// Settings of a client's resumable session.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientConfig {
+    /// This side's replay buffer size.
+    pub replay: u32,
+    /// How long after losing the channel the client keeps trying to resume.
+    pub give_up: Duration,
+}
+
+/// How long a client that is exiting waits for the server to close the
+/// channel after its CLOSE.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(1);
+
+/// Wait between two failed attempts to open a channel for a resume.
+pub const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Runs the client side of a resumable session: pumps between `first` (a
+/// channel whose handshake granted `grant`) and `local` (ssh's stdio).
+/// When the channel is lost, it keeps `local` open and calls `reconnect`
+/// with the resume request until a channel attaches, the server refuses
+/// the resume, or `config.give_up` has passed since the loss. `stop` ends the
+/// session with CLOSE. `log` receives one line per event.
+pub async fn run_client<C, L, R, F, S>(
+    local: &mut L,
+    first: C,
+    grant: Grant,
+    config: ClientConfig,
+    mut reconnect: R,
+    stop: S,
+    log: impl Fn(&str),
+) -> ClientSummary
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+    L: AsyncRead + AsyncWrite + Unpin,
+    R: FnMut(ResumeRequest) -> F,
+    F: Future<Output = Reconnect<C>>,
+    S: Future<Output = ()>,
+{
+    tokio::pin!(stop);
+    let ClientConfig { replay, give_up } = config;
+    let mut state = Stream::new(replay, grant.replay);
+    let mut token = grant.token;
+    let mut chan = first;
+    let mut resumes = 0u32;
+    let end = 'session: loop {
+        match run_attached(&mut chan, local, &mut state, &mut stop).await {
+            Ended::Local => break ClientEnd::Local,
+            Ended::Closed { reason, message } => break ClientEnd::Closed { reason, message },
+            Ended::Protocol(e) => break ClientEnd::Protocol(e),
+            Ended::Interrupted(()) => {
+                // ssh hangs up on its proxy as it exits: CLOSE has to reach
+                // the server before this process goes, or the server keeps
+                // the session for its whole linger time. The server closes
+                // the channel once CLOSE arrives.
+                let _ = chan
+                    .write_all(&encode_close(CLOSE_NORMAL, "client exiting"))
+                    .await;
+                let _ = chan.flush().await;
+                let _ = tokio::time::timeout(CLOSE_WAIT, async {
+                    let mut buf = [0u8; 512];
+                    while matches!(chan.read(&mut buf).await, Ok(n) if n > 0) {}
+                })
+                .await;
+                let _ = chan.shutdown().await;
+                break ClientEnd::Cancelled;
+            }
+            Ended::Channel(e) => {
+                let why = e.map_or_else(|| "channel closed".to_owned(), |e| e.to_string());
+                log(&format!(
+                    "channel lost ({why}); resuming the session for up to {}s",
+                    give_up.as_secs()
+                ));
+            }
+        }
+        let deadline = tokio::time::Instant::now() + give_up;
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let req = ResumeRequest {
+                token,
+                received: state.received(),
+            };
+            enum Wake<C> {
+                Stop,
+                Expired,
+                Tried(Reconnect<C>),
+            }
+            let tried = reconnect(req);
+            let wake = run_detached(local, &mut state, async {
+                tokio::select! {
+                    biased;
+                    _ = &mut stop => Wake::Stop,
+                    _ = tokio::time::sleep_until(deadline) => Wake::Expired,
+                    r = tried => Wake::Tried(r),
+                }
+            })
+            .await;
+            match wake {
+                Wake::Stop => break 'session ClientEnd::Cancelled,
+                Wake::Expired => {
+                    break 'session ClientEnd::Lost(format!(
+                        "not resumed within {}s",
+                        give_up.as_secs()
+                    ))
+                }
+                Wake::Tried(Reconnect::CannotResume(why)) => {
+                    break 'session ClientEnd::Lost(format!("server cannot resume: {why}"))
+                }
+                Wake::Tried(Reconnect::Failed(why)) => {
+                    log(&format!("resume attempt {attempt}: {why}"));
+                    let wait = run_detached(local, &mut state, async {
+                        tokio::select! {
+                            biased;
+                            _ = &mut stop => Some(ClientEnd::Cancelled),
+                            _ = tokio::time::sleep_until(deadline) => None,
+                            _ = tokio::time::sleep(RETRY_DELAY) => None,
+                        }
+                    })
+                    .await;
+                    if let Some(end) = wait {
+                        break 'session end;
+                    }
+                }
+                Wake::Tried(Reconnect::Attached(mut c, g)) => {
+                    if let Err(why) = state.rewind(g.received) {
+                        let _ = c.write_all(&encode_close(CLOSE_PROTOCOL, why)).await;
+                        let _ = c.flush().await;
+                        break 'session ClientEnd::Lost(format!("cannot resume: {why}"));
+                    }
+                    state.set_peer_replay(g.replay);
+                    token = g.token;
+                    chan = c;
+                    resumes += 1;
+                    log(&format!(
+                        "resumed (resume {resumes}, attempt {attempt}), resending from {} of {}, {} received",
+                        g.received,
+                        state.read_from_local(),
+                        state.received()
+                    ));
+                    break;
+                }
+            }
+        }
+    };
+    ClientSummary {
+        end,
+        from_server: state.received(),
+        to_server: state.acked,
+        resumes,
+    }
+}
+
+/// A channel that fails once `lost` fires: for platforms that report a
+/// lost link apart from the channel's streams (CoreBluetooth).
+pub struct Watched<S> {
+    inner: S,
+    /// None once the sender fired or went away.
+    lost: Option<tokio::sync::oneshot::Receiver<()>>,
+    gone: bool,
+}
+
+impl<S> Watched<S> {
+    pub fn new(inner: S, lost: tokio::sync::oneshot::Receiver<()>) -> Self {
+        Self {
+            inner,
+            lost: Some(lost),
+            gone: false,
+        }
+    }
+
+    fn check(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        if let Some(rx) = self.lost.as_mut() {
+            // A dropped sender means nobody watches: not a loss.
+            if let std::task::Poll::Ready(r) = std::pin::Pin::new(rx).poll(cx) {
+                self.gone = r.is_ok();
+                self.lost = None;
+            }
+        }
+        self.gone
+    }
+}
+
+fn link_lost() -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionAborted, "link lost")
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        if self.check(cx) {
+            return std::task::Poll::Ready(Err(link_lost()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        if self.check(cx) {
+            return std::task::Poll::Ready(Err(link_lost()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -452,3 +452,249 @@ async fn a_server_that_ignores_the_options_answers_without_session() {
     .unwrap();
     assert_eq!(parse_session(&ok.options), None);
 }
+
+/// A client channel that the test can cut: reads and writes fail once the
+/// sender fires, as when a link goes away under a channel.
+fn cuttable(ch: DuplexStream) -> (Watched<DuplexStream>, tokio::sync::oneshot::Sender<()>) {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    (Watched::new(ch, rx), tx)
+}
+
+/// A reconnect that fails `failures` times, then resumes on a new channel.
+fn reconnector(
+    registry: Registry,
+    failures: u32,
+) -> impl FnMut(
+    ResumeRequest,
+) -> std::pin::Pin<Box<dyn Future<Output = Reconnect<Watched<DuplexStream>>> + Send>> {
+    let mut tries = 0u32;
+    move |req| {
+        tries += 1;
+        let registry = registry.clone();
+        let fail = tries <= failures;
+        Box::pin(async move {
+            if fail {
+                return Reconnect::Failed("no link yet".into());
+            }
+            let (mut c, s) = tokio::io::duplex(1024);
+            tokio::spawn(async move { server_channel(s, registry, None, Duration::ZERO).await });
+            match open(&mut c, Some(req)).await {
+                Ok(g) => Reconnect::Attached(cuttable(c).0, g),
+                Err(ClientError::CannotResume(r)) => Reconnect::CannotResume(r),
+                Err(e) => Reconnect::Failed(e.to_string()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn run_client_resumes_after_a_lost_channel_and_ends_with_ssh() {
+    let registry = Registry::default();
+    let (server_local, sshd) = tokio::io::duplex(2048);
+    let (mut client_local, app) = tokio::io::duplex(2048);
+    let down = pattern(200_000, 3);
+    let up = pattern(100_000, 4);
+
+    let (mut c1, s1) = tokio::io::duplex(1024);
+    let reg = registry.clone();
+    let srv = tokio::spawn(async move {
+        server_channel(s1, reg, Some(server_local), Duration::from_secs(30)).await
+    });
+    let grant = open(&mut c1, None).await.unwrap();
+    let session = srv.await.unwrap().unwrap();
+    let (c1, cut) = cuttable(c1);
+
+    let (mut sshd_r, mut sshd_w) = tokio::io::split(sshd);
+    let down_w = down.clone();
+    tokio::spawn(async move { sshd_w.write_all(&down_w).await.unwrap() });
+    let up_len = up.len();
+    let sshd_reader = tokio::spawn(async move {
+        let mut got = vec![0u8; up_len];
+        sshd_r.read_exact(&mut got).await.unwrap();
+        got
+    });
+    let (mut app_r, mut app_w) = tokio::io::split(app);
+    let up_w = up.clone();
+    let app_writer = tokio::spawn(async move {
+        app_w.write_all(&up_w).await.unwrap();
+        app_w
+    });
+    let down_len = down.len();
+    let app_reader = tokio::spawn(async move {
+        let mut got = vec![0u8; down_len];
+        app_r.read_exact(&mut got[..50_000]).await.unwrap();
+        let _ = cut.send(()); // the link goes away mid-stream
+        app_r.read_exact(&mut got[50_000..]).await.unwrap();
+        (got, app_r)
+    });
+
+    let client = tokio::spawn(async move {
+        run_client(
+            &mut client_local,
+            c1,
+            grant,
+            ClientConfig {
+                replay: REPLAY,
+                give_up: Duration::from_secs(30),
+            },
+            reconnector(registry, 2),
+            std::future::pending(),
+            |_| {},
+        )
+        .await
+    });
+
+    let (got_down, app_r) = tokio::time::timeout(Duration::from_secs(20), app_reader)
+        .await
+        .expect("all server output arrives")
+        .unwrap();
+    assert!(got_down == down, "server to client stream differs");
+    let got_up = tokio::time::timeout(Duration::from_secs(20), sshd_reader)
+        .await
+        .expect("all client input arrives")
+        .unwrap();
+    assert!(got_up == up, "client to server stream differs");
+
+    // Both ends are done (the fake sshd closes once its stream is out):
+    // whichever side closes first, the session ends cleanly.
+    let app_w = app_writer.await.unwrap();
+    drop((app_r, app_w));
+    let summary = tokio::time::timeout(Duration::from_secs(5), client)
+        .await
+        .expect("client ends")
+        .unwrap();
+    assert!(
+        matches!(
+            summary.end,
+            ClientEnd::Local
+                | ClientEnd::Closed {
+                    reason: CLOSE_NORMAL,
+                    ..
+                }
+        ),
+        "{:?}",
+        summary.end
+    );
+    assert_eq!(summary.resumes, 1);
+    assert_eq!(summary.from_server, down.len() as u64);
+    assert_eq!(summary.to_server, up.len() as u64);
+    let s = tokio::time::timeout(Duration::from_secs(5), session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        s.end == "server ended the session" || s.end.starts_with("client closed the session"),
+        "{}",
+        s.end
+    );
+    assert_eq!(s.resumes, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_client_gives_up_when_no_channel_comes_back() {
+    let registry = Registry::default();
+    let (server_local, _sshd) = tokio::io::duplex(2048);
+    let (mut c1, s1) = tokio::io::duplex(1024);
+    let reg = registry.clone();
+    let srv = tokio::spawn(async move {
+        server_channel(s1, reg, Some(server_local), Duration::from_secs(30)).await
+    });
+    let grant = open(&mut c1, None).await.unwrap();
+    let _session = srv.await.unwrap().unwrap();
+    let (c1, cut) = cuttable(c1);
+    cut.send(()).unwrap();
+    let (mut local, _app) = tokio::io::duplex(2048);
+    let summary = run_client(
+        &mut local,
+        c1,
+        grant,
+        ClientConfig {
+            replay: REPLAY,
+            give_up: Duration::from_secs(5),
+        },
+        reconnector(registry, u32::MAX),
+        std::future::pending(),
+        |_| {},
+    )
+    .await;
+    match summary.end {
+        ClientEnd::Lost(why) => assert_eq!(why, "not resumed within 5s"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn run_client_stops_at_a_refused_resume() {
+    let registry = Registry::default();
+    let (server_local, _sshd) = tokio::io::duplex(2048);
+    let (mut c1, s1) = tokio::io::duplex(1024);
+    let reg = registry.clone();
+    let srv = tokio::spawn(async move {
+        server_channel(s1, reg, Some(server_local), Duration::from_secs(1)).await
+    });
+    let grant = open(&mut c1, None).await.unwrap();
+    let session = srv.await.unwrap().unwrap();
+    // The channel closes and the server lets the session expire before
+    // the client comes back.
+    drop(c1);
+    let s = session.await.unwrap();
+    assert_eq!(s.end, "not resumed within 1s");
+    let (c, cut) = cuttable(tokio::io::duplex(1024).0);
+    cut.send(()).unwrap();
+    let (mut local, _app) = tokio::io::duplex(2048);
+    let summary = run_client(
+        &mut local,
+        c,
+        grant,
+        ClientConfig {
+            replay: REPLAY,
+            give_up: Duration::from_secs(60),
+        },
+        reconnector(registry, 0),
+        std::future::pending(),
+        |_| {},
+    )
+    .await;
+    match summary.end {
+        ClientEnd::Lost(why) => assert_eq!(why, "server cannot resume: unknown session"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn run_client_stop_sends_close() {
+    let registry = Registry::default();
+    let (server_local, _sshd) = tokio::io::duplex(2048);
+    let (mut c1, s1) = tokio::io::duplex(1024);
+    let reg = registry.clone();
+    let srv = tokio::spawn(async move {
+        server_channel(s1, reg, Some(server_local), Duration::from_secs(30)).await
+    });
+    let grant = open(&mut c1, None).await.unwrap();
+    let session = srv.await.unwrap().unwrap();
+    let (mut local, _app) = tokio::io::duplex(2048);
+    let summary = run_client(
+        &mut local,
+        cuttable(c1).0,
+        grant,
+        ClientConfig {
+            replay: REPLAY,
+            give_up: Duration::from_secs(30),
+        },
+        reconnector(registry.clone(), 0),
+        tokio::time::sleep(Duration::from_millis(50)),
+        |_| {},
+    )
+    .await;
+    assert!(
+        matches!(summary.end, ClientEnd::Cancelled),
+        "{:?}",
+        summary.end
+    );
+    let s = tokio::time::timeout(Duration::from_secs(5), session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(s.end.starts_with("client closed the session"), "{}", s.end);
+    assert!(registry.is_empty());
+}

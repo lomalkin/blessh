@@ -35,6 +35,18 @@ Host my-pi
 `BLESSH_PROXY_ARGS` passes options to the proxy, for example `--adapter
 hci1` or `--gatt`; `blessh proxy --help` lists them.
 
+## Lost links
+
+On an L2CAP channel the proxy asks for a resumable session (protocol.md,
+"Resumable sessions"). When the channel or the link goes away, ssh keeps
+running and sees a pause: the proxy connects again, resumes the session
+on a new channel and resends what the server did not receive, so there
+is no new login. It tries every second for up to `--resume` seconds
+(default 120); then, or when the server no longer has the session, it
+exits with status 3 and ssh reports the connection closed. `--resume 0`
+asks for an ordinary session. A server without resumable sessions, and
+the GATT stream, give an ordinary session, which ends with the link.
+
 ## Choosing a server
 
 Without a server, on a terminal, `blessh` lists the servers in range as

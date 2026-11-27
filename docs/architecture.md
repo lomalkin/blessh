@@ -167,7 +167,9 @@ not deliver it), phones, and Apple's CoreBluetooth against a BlueZ server.
 
 * Anyone in range can attempt logins; only sshd's policy limits them, and
   not per source. Use keys, not passwords.
-* A lost link ends the session; there is no resumption.
+* A lost link ends the session on the GATT stream, and on a channel whose
+  client does not ask for a resumable session; a resumable session
+  survives it for the server's `--resume` time.
 * The advertised name is public, like a host name on a network.
 * The GATT stream shares BlueZ's limits: one session, EATT off on both
   sides, and before BlueZ 5.76 other devices nearby can disturb it.
